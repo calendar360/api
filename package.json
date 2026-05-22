@@ -1,0 +1,36 @@
+{
+  "name": "calendar-360-api",
+  "version": "1.0.0",
+  "description": "Calendar 360 backend API",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "nodemon src/server.js",
+    "dev": "nodemon src/server.js",
+    "start:prod": "node src/server.js",
+    "db:init": "node src/db/initDb.js",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "db:studio": "prisma studio",
+    "db:migrate": "prisma migrate dev",
+    "db:export-firestore": "node scripts/export-firestore.js",
+    "db:import-firestore": "node scripts/import-firestore-export.js",
+    "postinstall": "prisma generate"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "multer": "^1.4.5-lts.1",
+    "pg": "^8.13.1",
+    "@prisma/client": "^6.8.2",
+    "prisma": "^6.8.2",
+    "firebase-admin": "^13.4.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  }
+}

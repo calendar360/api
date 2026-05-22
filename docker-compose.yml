@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cal360-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: calendar360
+    ports:
+      - "5432:5432"
+    volumes:
+      - calendar360_pg_data:/var/lib/postgresql/data
+
+
+  api:
+    image: davidudoji/cal360api:latest
+    container_name: cal360api
+    restart: always
+    expose:
+      - "4000"
+    ports:
+      - "4000:4000"
+    depends_on:
+      - db
+    env_file:
+      - ./api/.env
+    volumes:
+      - ./api/uploads:/app/uploads
+    networks:
+      - cal360_net
+
+volumes:
+  cal360_pg_data:

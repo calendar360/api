@@ -1,0 +1,7 @@
+node_modules
+firestore-export/*.json
+!firestore-export/.gitkeep/
+.env
+uploads/*
+!uploads/.gitkeep
+firebase-adminsdk*.json

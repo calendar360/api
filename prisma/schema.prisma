@@ -1,0 +1,115 @@
+// Calendar 360 — PostgreSQL schema (use Prisma Studio or Client to query/edit)
+// Run: npm run db:generate && npm run db:push
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                    Int       @id @default(autoincrement())
+  name                  String    @db.VarChar(255)
+  email                 String    @unique @db.VarChar(255)
+  password              String?   @db.VarChar(255)
+  firebaseUid           String?   @unique @map("firebase_uid") @db.VarChar(255)
+  firstName             String?   @map("first_name") @db.VarChar(255)
+  lastName              String?   @map("last_name") @db.VarChar(255)
+  username              String?   @db.VarChar(255)
+  /// Toggle in Prisma Studio: true = admin, false = member
+  isAdmin               Boolean   @default(false) @map("is_admin")
+  isPaid                Boolean   @default(false) @map("is_paid")
+  fcmToken              String?   @map("fcm_token")
+  kingschatId           String?   @map("kingschat_id") @db.VarChar(255)
+  kingschatRefreshToken String?   @map("kingschat_refresh_token") @db.VarChar(255)
+  kingschatAccessToken  String?   @map("kingschat_access_token")
+  avatar                String?   @db.VarChar(500)
+  profilePhoto          String?   @map("profile_photo") @db.VarChar(500)
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  eventsCreated   Event[]           @relation("EventCreator")
+  birthdayWishes  BirthdayWish[]
+  wordsForMonth   WordForMonth[]
+  advertisements  Advertisement[]
+
+  @@map("users")
+}
+
+model Advertisement {
+  id          Int      @id @default(autoincrement())
+  userId      Int      @map("user_id")
+  title       String   @db.VarChar(255)
+  description String?
+  imagePath   String?  @map("image_path") @db.VarChar(500)
+  linkUrl     String?  @map("link_url") @db.VarChar(500)
+  startAt     DateTime @map("start_at") @db.Timestamptz
+  endAt       DateTime @map("end_at") @db.Timestamptz
+  amountCents Int      @default(0) @map("amount_cents")
+  status      String   @default("active") @db.VarChar(32)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("advertisements")
+}
+
+model Event {
+  id              String    @id @db.VarChar(64)
+  title           String    @db.VarChar(500)
+  type            String    @default("event") @db.VarChar(100)
+  startTime       DateTime  @map("start_time") @db.Timestamptz
+  endTime         DateTime  @map("end_time") @db.Timestamptz
+  createdByUserId Int?      @map("created_by_user_id")
+  isGlobal        Boolean   @default(false) @map("is_global")
+  color           String?   @db.VarChar(20)
+  reminder        Int       @default(0)
+  description     String?
+  imagePath       String?   @map("image_path") @db.VarChar(500)
+  watchUrl        String?   @map("watch_url") @db.VarChar(500)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  createdBy      User?            @relation("EventCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  birthdayWishes BirthdayWish[]
+
+  @@map("events")
+}
+
+model BirthdayWish {
+  id        Int      @id @default(autoincrement())
+  eventId   String   @map("event_id") @db.VarChar(64)
+  userId    Int?     @map("user_id")
+  userName  String   @map("user_name") @db.VarChar(255)
+  message   String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user  User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("birthday_wishes")
+}
+
+model AppSetting {
+  key       String   @id @db.VarChar(100)
+  value     String?
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("app_settings")
+}
+
+model WordForMonth {
+  id              String   @id @db.VarChar(64)
+  word            String
+  month           String?  @db.VarChar(32)
+  year            Int?
+  createdByUserId Int?     @map("created_by_user_id")
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  createdBy User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@map("words_for_month")
+}
