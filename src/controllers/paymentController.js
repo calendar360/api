@@ -4,6 +4,8 @@ import pool from '../db/pool.js';
 
 const MARQUEE_PRICE_PER_DAY = 0.99;
 const MARQUEE_CENTS_PER_DAY = 99;
+const PREMIUM_PRICE = 2.99;
+const PREMIUM_PRICE_CENTS = 299;
 
 function backendBaseUrl(req) {
   const env = process.env.BACKEND_URL;
@@ -137,6 +139,59 @@ async function activateMarqueeAd(adId, confirmData = {}) {
     [start.toISOString(), end.toISOString(), JSON.stringify(payment), adId],
   );
 }
+
+export const initPremiumPayment = async (req, res) => {
+  try {
+    const baseUrl = backendBaseUrl(req);
+    const success_url = `${baseUrl}/api/payments/premium/success`;
+    const fail_url = `${baseUrl}/api/payments/premium/failed`;
+
+    const payload = {
+      product_sku: `premium_subscription_${req.userId}`,
+      price: PREMIUM_PRICE,
+      merchant_wallet: process.env.ESPEES_MERCHANT_WALLET || process.env.ESPEES_WALLET,
+      narration: `Calendar 360 Premium Subscription`,
+      success_url,
+      fail_url,
+    };
+
+    if (!payload.merchant_wallet) {
+      return res.status(500).json({
+        success: false,
+        message: 'ESPEES_MERCHANT_WALLET not configured on server',
+      });
+    }
+
+    const response = await axios.post('https://api.espees.org/payment/product', payload, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 30000,
+    });
+
+    const respData = response.data || {};
+    const payment_id = extractPaymentId(respData);
+    if (!payment_id) {
+      return res.status(502).json({
+        success: false,
+        message: 'Espees did not return a payment id',
+        details: respData,
+      });
+    }
+
+    return res.json({
+      success: true,
+      payment_url: `https://payment.espees.org/pay/${payment_id}`,
+      payment_id,
+      amount: PREMIUM_PRICE,
+    });
+  } catch (err) {
+    console.error('initPremiumPayment', err.response?.data || err.message);
+    return res.status(err.response?.status || 500).json({
+      success: false,
+      message: 'Payment init failed',
+      details: err.response?.data || err.message,
+    });
+  }
+};
 
 export const handleEspeesSuccess = async (req, res) => {
   try {
@@ -331,3 +386,104 @@ function paymentHtml(success, message) {
 <h1 style="color:${color}">${title}</h1><p>${message}</p><p style="opacity:0.7;font-size:14px;">You can close this page and return to Calendar 360.</p>
 </body></html>`;
 }
+
+export const handlePremiumSuccess = async (req, res) => {
+  try {
+    const transaction_id = req.query.transaction_id || req.query.payment_id || req.query.product_id;
+
+    if (!req.userId) {
+      return res.status(400).send(paymentHtml(false, 'User not authenticated'));
+    }
+
+    const userRes = await pool.query('SELECT * FROM users WHERE id = $1', [req.userId]);
+    if (!userRes.rows.length) {
+      return res.status(404).send(paymentHtml(false, 'User not found'));
+    }
+    const user = userRes.rows[0];
+
+    let premiumData = {};
+    try {
+      premiumData = typeof user.premium_data === 'string' ? JSON.parse(user.premium_data) : user.premium_data || {};
+    } catch (_) {}
+
+    if (premiumData.status === 'active' && premiumData.paid) {
+      return res.send(paymentHtml(true, 'Premium already activated'));
+    }
+
+    let confirmData = {};
+    if (transaction_id) {
+      try {
+        const confirmResp = await axios.post(
+          'https://api.espees.org/payment/confirm',
+          { product_id: transaction_id },
+          { headers: { 'Content-Type': 'application/json' }, timeout: 20000 },
+        );
+        confirmData = confirmResp.data || {};
+        const returnedAmount = confirmData?.price ?? confirmData?.amount;
+        if (returnedAmount != null && parseFloat(returnedAmount) !== PREMIUM_PRICE) {
+          await pool.query(
+            `UPDATE users SET premium_data = $1 WHERE id = $2`,
+            [
+              JSON.stringify({
+                ...premiumData,
+                status: 'Discrepancy',
+                confirmation: confirmData,
+              }),
+              req.userId,
+            ],
+          );
+          return res.send(paymentHtml(false, 'Amount mismatch — contact support'));
+        }
+      } catch (confirmErr) {
+        console.error('[espees] confirm', confirmErr.message);
+      }
+    }
+
+    const activationDate = new Date();
+    const expirationDate = new Date(activationDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    const updatedData = {
+      status: 'active',
+      paid: true,
+      activatedAt: activationDate.toISOString(),
+      expiresAt: expirationDate.toISOString(),
+      confirmation: confirmData,
+    };
+
+    await pool.query(
+      `UPDATE users SET premium_data = $1 WHERE id = $2`,
+      [JSON.stringify(updatedData), req.userId],
+    );
+
+    return res.send(paymentHtml(true, 'Premium subscription activated'));
+  } catch (err) {
+    console.error('handlePremiumSuccess', err);
+    return res.status(500).send(paymentHtml(false, 'Server error'));
+  }
+};
+
+export const handlePremiumFailure = async (req, res) => {
+  try {
+    if (req.userId) {
+      const userRes = await pool.query('SELECT * FROM users WHERE id = $1', [req.userId]);
+      if (userRes.rows.length) {
+        const user = userRes.rows[0];
+        let premiumData = {};
+        try {
+          premiumData = typeof user.premium_data === 'string' ? JSON.parse(user.premium_data) : user.premium_data || {};
+        } catch (_) {}
+
+        await pool.query(
+          `UPDATE users SET premium_data = $1 WHERE id = $2`,
+          [JSON.stringify({ ...premiumData, status: 'payment_failed' }), req.userId],
+        );
+      }
+    }
+    const details = req.query.status_details || 'Payment was not completed';
+    return res.send(paymentHtml(false, details));
+  } catch (err) {
+    console.error('handlePremiumFailure', err);
+    return res.status(500).send(paymentHtml(false, 'Payment failed'));
+  }
+};
+
