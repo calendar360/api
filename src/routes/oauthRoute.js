@@ -3,7 +3,7 @@ import express from "express";
 const router = express.Router();
 
 const CLIENT_ID =
-  process.env.KINGSCHAT_CLIENT_ID || "039a46cc-9aff-4f38-bc3d-73d0a99afef3";
+  process.env.KINGSCHAT_CLIENT_ID || "cafb1341-9d9e-4aa3-840b-8b23048cbf73";
 const SCOPES = process.env.KINGSCHAT_SCOPES || '["send_chat_message"]';
 
 function publicBaseUrl(req) {
