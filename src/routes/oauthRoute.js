@@ -2,9 +2,8 @@ import express from "express";
 
 const router = express.Router();
 
-const CLIENT_ID =
-  process.env.KINGSCHAT_CLIENT_ID || "cafb1341-9d9e-4aa3-840b-8b23048cbf73";
-const SCOPES = process.env.KINGSCHAT_SCOPES || '["send_chat_message"]';
+export const CLIENT_ID =process.env.KINGSCHAT_CLIENT_ID || "cafb1341-9d9e-4aa3-840b-8b23048cbf73";
+export const SCOPES = process.env.KINGSCHAT_SCOPES || '["send_chat_message"]';
 
 function publicBaseUrl(req) {
   return `http://${req.get("host")}`;
