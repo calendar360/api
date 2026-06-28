@@ -101,5 +101,31 @@ export async function ensureSchema() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_ads_active ON advertisements(status, end_at);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_ads_payment_id ON advertisements(payment_id);`);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS theme_of_year (
+      id SERIAL PRIMARY KEY,
+      year INT NOT NULL UNIQUE,
+      title VARCHAR(500) NOT NULL,
+      description TEXT,
+      image_path VARCHAR(500),
+      created_by_user_id INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_theme_year ON theme_of_year(year);`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS on_this_day (
+      id SERIAL PRIMARY KEY,
+      title VARCHAR(500) NOT NULL,
+      description TEXT,
+      image_path VARCHAR(500),
+      created_by_user_id INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
   console.log('[db] schema ready');
 }

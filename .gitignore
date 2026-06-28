@@ -4,6 +4,6 @@ firestore-export/*.json
 .env
 uploads/*
 !uploads/.gitkeep
-firebase-adminsdk*.json
+*firebase-adminsdk*.json
 Dockerfile
 docker-compose.yml

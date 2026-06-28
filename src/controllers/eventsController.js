@@ -183,6 +183,15 @@ export const updateEvent = async (req, res) => {
     );
 
     const updated = (await pool.query('SELECT * FROM events WHERE id = $1', [id])).rows[0];
+
+    if (updated.is_global) {
+      pushGlobalEvent({
+        title: 'Global event updated',
+        body: updated.title,
+        eventId: id,
+      }).catch((e) => console.error('[fcm] updateEvent push', e));
+    }
+
     res.json({ success: true, event: mapEvent(updated, req) });
   } catch (error) {
     console.error('updateEvent', error);

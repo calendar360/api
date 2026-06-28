@@ -12,8 +12,8 @@ function resolveServiceAccountPath() {
     return path.resolve(process.env.FIREBASE_SERVICE_ACCOUNT);
   }
   const candidates = [
-    path.join(__dirname, '../../calendar-360-firebase-adminsdk-fbsvc-85d7dbb4d0.json'),
-    path.join(__dirname, '../../../android/calendar-360-firebase-adminsdk-fbsvc-85d7dbb4d0.json'),
+    path.join(__dirname, '../../calendar-360-60316-firebase-adminsdk-fbsvc-a7c8c33bda.json'),
+    path.join(__dirname, '../../../android/calendar-360-60316-firebase-adminsdk-fbsvc-a7c8c33bda.json'),
   ];
   return candidates.find((p) => fs.existsSync(p)) || null;
 }
@@ -46,7 +46,7 @@ export async function initFcm() {
 export const GLOBAL_EVENTS_TOPIC = 'global_events';
 
 /** Notify all devices subscribed to global_events topic. */
-export async function pushGlobalEvent({ title, body, eventId }) {
+export async function pushGlobalEvent({ title, body, eventId, extraData }) {
   const ok = await initFcm();
   if (!ok || !messaging) return { sent: false, reason: 'fcm_not_configured' };
 
@@ -57,6 +57,7 @@ export async function pushGlobalEvent({ title, body, eventId }) {
       data: {
         type: 'global_event',
         eventId: eventId || '',
+        ...(extraData || {}),
       },
       android: {
         priority: 'high',

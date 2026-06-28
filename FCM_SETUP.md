@@ -8,7 +8,7 @@ When an **admin** creates a **global event**, all app users get a push via topic
 2. **Project settings** → **Cloud Messaging** — note that Cloud Messaging API is enabled
 3. **Project settings** → **Service accounts** → **Generate new private key**
 4. Save the JSON as:
-   - `api/calendar-360-firebase-adminsdk-fbsvc-85d7dbb4d0.json`  
+   - `api/calendar-360-60316-firebase-adminsdk-fbsvc-a7c8c33bda.json`  
    (or copy the file already in `android/`)
 
 ## 2. API `.env`

@@ -13,6 +13,8 @@ import wordsRouter from './routes/wordsRoute.js';
 import adsRouter from './routes/adsRoute.js';
 import paymentsRouter from './routes/paymentsRoute.js';
 import appSettingsRouter from './routes/appSettingsRoute.js';
+import themesRouter from './routes/themesRoute.js';
+import onThisDayRouter from './routes/onThisDayRoute.js';
 import { initFcm } from './services/fcmService.js';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler.js';
 import { ensureSchema } from './db/ensureSchema.js';
@@ -72,6 +74,8 @@ app.use('/api/words', wordsRouter);
 app.use('/api/ads', adsRouter);
 app.use('/api/payments', paymentsRouter);
 app.use('/api/app-settings', appSettingsRouter);
+app.use('/api/themes', themesRouter);
+app.use('/api/on-this-day', onThisDayRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

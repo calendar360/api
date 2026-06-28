@@ -195,12 +195,15 @@ export const kingschatLogin = async (req, res) => {
     const token = createToken(user.id);
     res.json({ success: true, token, user: mapUserRow(user, kcId) });
   } catch (error) {
-    console.error("kingschatLogin error", error.message);
+    const kcStatus = error.response?.status;
     const message =
       error.response?.data?.message ||
+      error.response?.data?.error ||
       error.message ||
       "KingsChat login failed";
-    res.status(500).json({ success: false, message });
+    console.error("kingschatLogin error", kcStatus ?? "", message);
+    const status = kcStatus && kcStatus < 500 ? 400 : 500;
+    res.status(status).json({ success: false, message });
   }
 };
 
