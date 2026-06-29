@@ -2,12 +2,13 @@ import pool from '../db/pool.js';
 import { uploadPublicUrl } from '../utils/publicUrl.js';
 import { pushGlobalEvent } from '../services/fcmService.js';
 
-function requireAdmin(req, res) {
+async function requireAdmin(req, res) {
   if (!req.userId) {
     res.status(401).json({ success: false, message: 'Unauthorized' });
     return false;
   }
-  if (!req.isAdmin) {
+  const result = await pool.query('SELECT is_admin FROM users WHERE id = $1', [req.userId]);
+  if (!result.rows[0]?.is_admin) {
     res.status(403).json({ success: false, message: 'Admin only' });
     return false;
   }
@@ -57,7 +58,7 @@ export async function getPost(req, res) {
 
 /** POST /api/on-this-day — admin creates post + triggers push notification */
 export async function createPost(req, res) {
-  if (!requireAdmin(req, res)) return;
+  if (!await requireAdmin(req, res)) return;
   try {
     const { title, description, imagePath } = req.body;
     if (!title?.trim())
@@ -91,7 +92,7 @@ export async function createPost(req, res) {
 
 /** PUT /api/on-this-day/:id — admin updates (no re-notification) */
 export async function updatePost(req, res) {
-  if (!requireAdmin(req, res)) return;
+  if (!await requireAdmin(req, res)) return;
   try {
     const { id } = req.params;
     const { title, description, imagePath } = req.body;
@@ -115,7 +116,7 @@ export async function updatePost(req, res) {
 
 /** DELETE /api/on-this-day/:id */
 export async function deletePost(req, res) {
-  if (!requireAdmin(req, res)) return;
+  if (!await requireAdmin(req, res)) return;
   try {
     const { rowCount } = await pool.query(
       `DELETE FROM on_this_day WHERE id = $1`,
