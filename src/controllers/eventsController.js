@@ -11,6 +11,7 @@ function mapEvent(row, req) {
     endTime: row.end_time,
     createdBy: row.created_by_user_id ? String(row.created_by_user_id) : null,
     isGlobal: row.is_global === true,
+    isYearly: row.is_yearly === true,
     color: row.color,
     reminder: row.reminder,
     description: row.description,
@@ -53,6 +54,7 @@ export const createEvent = async (req, res) => {
       startTime,
       endTime,
       isGlobal,
+      isYearly,
       color,
       reminder,
       description,
@@ -89,8 +91,8 @@ export const createEvent = async (req, res) => {
     await pool.query(
       `INSERT INTO events (
         id, title, type, start_time, end_time, created_by_user_id, is_global,
-        color, reminder, description, image_path, watch_url
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+        is_yearly, color, reminder, description, image_path, watch_url
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
       [
         eventId,
         title,
@@ -99,6 +101,7 @@ export const createEvent = async (req, res) => {
         endTime,
         userId,
         global,
+        isYearly === true,
         color,
         reminder ?? 0,
         description,
@@ -160,19 +163,21 @@ export const updateEvent = async (req, res) => {
         start_time = COALESCE($3, start_time),
         end_time = COALESCE($4, end_time),
         is_global = COALESCE($5, is_global),
-        color = COALESCE($6, color),
-        reminder = COALESCE($7, reminder),
-        description = COALESCE($8, description),
-        image_path = COALESCE($9, image_path),
-        watch_url = COALESCE($10, watch_url),
+        is_yearly = COALESCE($6, is_yearly),
+        color = COALESCE($7, color),
+        reminder = COALESCE($8, reminder),
+        description = COALESCE($9, description),
+        image_path = COALESCE($10, image_path),
+        watch_url = COALESCE($11, watch_url),
         updated_at = CURRENT_TIMESTAMP
-      WHERE id = $11`,
+      WHERE id = $12`,
       [
         fields.title,
         fields.type,
         fields.startTime,
         fields.endTime,
         fields.isGlobal,
+        fields.isYearly === true ? true : (fields.isYearly === false ? false : null),
         fields.color,
         fields.reminder,
         fields.description,
