@@ -11,7 +11,8 @@ services:
       - "5432:5432"
     volumes:
       - calendar360_pg_data:/var/lib/postgresql/data
-
+    networks:
+      - cal360_net
 
   api:
     image: davidudoji/cal360api:latest
@@ -22,13 +23,17 @@ services:
     ports:
       - "4000:4000"
     depends_on:
-      - db
+      - postgres
     env_file:
       - ./api/.env
     volumes:
-      - ./api/uploads:/app/uploads
+      - uploads_data:/usr/src/app/uploads
     networks:
       - cal360_net
 
 volumes:
-  cal360_pg_data:
+  calendar360_pg_data:
+  uploads_data:
+
+networks:
+  cal360_net:
