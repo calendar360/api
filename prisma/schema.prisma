@@ -35,6 +35,8 @@ model User {
   birthdayWishes  BirthdayWish[]
   wordsForMonth   WordForMonth[]
   advertisements  Advertisement[]
+  themesOfYear    ThemeOfYear[]
+  onThisDayPosts  OnThisDay[]
 
   @@map("users")
 }
@@ -65,6 +67,7 @@ model Event {
   endTime         DateTime  @map("end_time") @db.Timestamptz
   createdByUserId Int?      @map("created_by_user_id")
   isGlobal        Boolean   @default(false) @map("is_global")
+  isYearly        Boolean   @default(false) @map("is_yearly")
   color           String?   @db.VarChar(20)
   reminder        Int       @default(0)
   description     String?
@@ -99,6 +102,35 @@ model AppSetting {
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   @@map("app_settings")
+}
+
+model ThemeOfYear {
+  id              Int       @id @default(autoincrement())
+  year            Int       @unique
+  title           String    @db.VarChar(500)
+  description     String?
+  imagePath       String?   @map("image_path") @db.VarChar(500)
+  createdByUserId Int?      @map("created_by_user_id")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  createdBy User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@map("theme_of_year")
+}
+
+model OnThisDay {
+  id              Int       @id @default(autoincrement())
+  title           String    @db.VarChar(500)
+  description     String?
+  imagePath       String?   @map("image_path") @db.VarChar(500)
+  createdByUserId Int?      @map("created_by_user_id")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  createdBy User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@map("on_this_day")
 }
 
 model WordForMonth {
