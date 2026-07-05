@@ -1,5 +1,6 @@
 import pool from '../db/pool.js';
 import { uploadPublicUrl } from '../utils/publicUrl.js';
+import { pushGlobalEvent } from '../services/fcmService.js';
 
 function mapTheme(row, req) {
   return {
@@ -60,7 +61,16 @@ export const createTheme = async (req, res) => {
        VALUES ($1, $2, $3, $4, $5) RETURNING *`,
       [year, title, description ?? null, imagePath ?? null, req.userId],
     );
-    res.status(201).json({ success: true, theme: mapTheme(result.rows[0], req) });
+    const theme = mapTheme(result.rows[0], req);
+
+    const fcmResult = await pushGlobalEvent({
+      title: `Theme of the Year ${theme.year}`,
+      body: theme.title,
+      eventId: String(theme.id),
+      extraData: { type: 'theme_of_year', themeId: String(theme.id) },
+    });
+
+    res.status(201).json({ success: true, theme, fcm: fcmResult });
   } catch (error) {
     if (error.code === '23505') {
       return res.status(409).json({ success: false, message: `Theme for year ${req.body.year} already exists` });
@@ -89,7 +99,16 @@ export const updateTheme = async (req, res) => {
        WHERE id = $5 RETURNING *`,
       [year ?? null, title ?? null, description ?? null, imagePath ?? null, id],
     );
-    res.json({ success: true, theme: mapTheme(result.rows[0], req) });
+    const theme = mapTheme(result.rows[0], req);
+
+    const fcmResult = await pushGlobalEvent({
+      title: `Theme of the Year ${theme.year}`,
+      body: theme.title,
+      eventId: String(theme.id),
+      extraData: { type: 'theme_of_year', themeId: String(theme.id) },
+    });
+
+    res.json({ success: true, theme, fcm: fcmResult });
   } catch (error) {
     if (error.code === '23505') {
       return res.status(409).json({ success: false, message: `Theme for that year already exists` });

@@ -1,4 +1,5 @@
 import pool from '../db/pool.js';
+import { pushGlobalEvent } from '../services/fcmService.js';
 
 export const listWords = async (_req, res) => {
   try {
@@ -47,6 +48,15 @@ export const upsertWord = async (req, res) => {
     );
 
     const row = (await pool.query('SELECT * FROM words_for_month WHERE id = $1', [id])).rows[0];
+
+    // Fire push notification to all subscribers
+    const fcmResult = await pushGlobalEvent({
+      title: 'Word for the Month',
+      body: `${row.month} ${row.year}: "${row.word}"`,
+      eventId: String(row.id),
+      extraData: { type: 'word_of_month', wordId: String(row.id) },
+    });
+
     res.json({
       success: true,
       entry: {
@@ -56,6 +66,7 @@ export const upsertWord = async (req, res) => {
         year: row.year,
         updatedAt: row.updated_at,
       },
+      fcm: fcmResult,
     });
   } catch (error) {
     console.error('upsertWord', error);
