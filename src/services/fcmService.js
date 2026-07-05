@@ -5,7 +5,6 @@ import pool from '../db/pool.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let messaging = null;
-let initAttempted = false;
 
 function resolveServiceAccountPath() {
   if (process.env.FIREBASE_SERVICE_ACCOUNT) {
@@ -19,8 +18,7 @@ function resolveServiceAccountPath() {
 }
 
 export async function initFcm() {
-  if (initAttempted) return messaging != null;
-  initAttempted = true;
+  if (messaging) return true;
 
   const saPath = resolveServiceAccountPath();
   if (!saPath) {
@@ -62,7 +60,10 @@ export async function pushGlobalEvent({ title, body, eventId, extraData }) {
       android: {
         priority: 'high',
         notification: {
-          channelId: 'global_admin_events',
+          // Matches ReminderService.globalChannel in the Flutter app (also
+          // the manifest's default_notification_channel_id fallback) so
+          // delivery doesn't depend on undocumented OS fallback behavior.
+          channelId: 'cal360_global_events_v2',
           priority: 'high',
           defaultSound: true,
         },
