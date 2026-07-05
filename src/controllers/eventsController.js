@@ -62,8 +62,8 @@ export const createEvent = async (req, res) => {
       watchUrl,
     } = req.body;
 
-    if (!title || !startTime || !endTime) {
-      return res.status(400).json({ success: false, message: 'title, startTime, endTime required' });
+    if (!title || !startTime) {
+      return res.status(400).json({ success: false, message: 'title and startTime required' });
     }
 
     const eventId = id || `${Date.now()}`;

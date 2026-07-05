@@ -1,16 +1,14 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: cal360-db
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: calendar360
-    ports:
-      - "5432:5432"
+  db:
+    image: postgres:18
+    container_name: cal360db
+    restart: always
+    env_file:
+      - ./db/.env
     volumes:
-      - calendar360_pg_data:/var/lib/postgresql/data
+      - ./db/data:/var/lib/postgresql
+    ports:
+      - "4456:5432"
     networks:
       - cal360_net
 
@@ -19,21 +17,19 @@ services:
     container_name: cal360api
     restart: always
     expose:
-      - "4000"
+      - "4455"
     ports:
-      - "4000:4000"
+      - "4455:4000"
     depends_on:
-      - postgres
+      - db
     env_file:
       - ./api/.env
     volumes:
-      - uploads_data:/usr/src/app/uploads
+      - ./api/uploads:/usr/src/app/uploads
+      - ./api/firebase-adminsdk.json:/app/firebase-adminsdk.json:ro
     networks:
       - cal360_net
 
-volumes:
-  calendar360_pg_data:
-  uploads_data:
-
 networks:
   cal360_net:
+    driver: bridge

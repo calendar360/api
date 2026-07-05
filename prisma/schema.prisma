@@ -64,7 +64,7 @@ model Event {
   title           String    @db.VarChar(500)
   type            String    @default("event") @db.VarChar(100)
   startTime       DateTime  @map("start_time") @db.Timestamptz
-  endTime         DateTime  @map("end_time") @db.Timestamptz
+  endTime         DateTime? @map("end_time") @db.Timestamptz
   createdByUserId Int?      @map("created_by_user_id")
   isGlobal        Boolean   @default(false) @map("is_global")
   isYearly        Boolean   @default(false) @map("is_yearly")
