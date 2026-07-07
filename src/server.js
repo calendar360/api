@@ -15,6 +15,7 @@ import paymentsRouter from './routes/paymentsRoute.js';
 import appSettingsRouter from './routes/appSettingsRoute.js';
 import themesRouter from './routes/themesRoute.js';
 import onThisDayRouter from './routes/onThisDayRoute.js';
+import meetingsRouter from './routes/meetingsRoute.js';
 import { initFcm } from './services/fcmService.js';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler.js';
 import { ensureSchema } from './db/ensureSchema.js';
@@ -76,6 +77,7 @@ app.use('/api/payments', paymentsRouter);
 app.use('/api/app-settings', appSettingsRouter);
 app.use('/api/themes', themesRouter);
 app.use('/api/on-this-day', onThisDayRouter);
+app.use('/api/meetings', meetingsRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

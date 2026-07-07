@@ -127,5 +127,37 @@ export async function ensureSchema() {
     );
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS meetings (
+      id SERIAL PRIMARY KEY,
+      title VARCHAR(500) NOT NULL,
+      description TEXT,
+      start_time TIMESTAMPTZ NOT NULL,
+      end_time TIMESTAMPTZ,
+      color VARCHAR(20),
+      reminder INT DEFAULT 15,
+      organizer_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS meeting_invitees (
+      id SERIAL PRIMARY KEY,
+      meeting_id INT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status VARCHAR(20) DEFAULT 'pending',
+      responded_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(meeting_id, user_id)
+    );
+  `);
+
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_meetings_organizer ON meetings(organizer_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_meetings_start ON meetings(start_time);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_meeting_invitees_user ON meeting_invitees(user_id, status);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_meeting_invitees_meeting ON meeting_invitees(meeting_id);`);
+
   console.log('[db] schema ready');
 }

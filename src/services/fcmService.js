@@ -92,3 +92,28 @@ export async function saveUserFcmToken(userId, token) {
     [token, userId],
   );
 }
+
+/** Send a push notification to a specific device token. */
+export async function pushToUser(fcmToken, { title, body, data = {} }) {
+  if (!fcmToken) return { sent: false, reason: 'no_token' };
+  const ok = await initFcm();
+  if (!ok || !messaging) return { sent: false, reason: 'fcm_not_configured' };
+  try {
+    const messageId = await messaging.send({
+      token: fcmToken,
+      notification: { title, body },
+      data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])),
+      android: {
+        priority: 'high',
+        notification: { channelId: 'cal360_reminders_v2', priority: 'high', defaultSound: true },
+      },
+      apns: {
+        payload: { aps: { alert: { title, body }, sound: 'default' } },
+      },
+    });
+    return { sent: true, messageId };
+  } catch (e) {
+    console.error('[fcm] pushToUser failed:', e.message);
+    return { sent: false, reason: e.message };
+  }
+}
