@@ -159,5 +159,9 @@ export async function ensureSchema() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_meeting_invitees_user ON meeting_invitees(user_id, status);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_meeting_invitees_meeting ON meeting_invitees(meeting_id);`);
 
+  await pool.query(`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS location VARCHAR(500);`);
+  await pool.query(`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS meeting_link TEXT;`);
+  await pool.query(`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS image_urls TEXT[] DEFAULT ARRAY[]::TEXT[];`);
+
   console.log('[db] schema ready');
 }

@@ -15,6 +15,9 @@ function formatMeeting(row, invitees = []) {
     organizerUsername: row.username || '',
     organizerAvatar: row.avatar || row.profile_photo || null,
     myStatus: row.my_status ?? null,
+    location: row.location || null,
+    meetingLink: row.meeting_link || null,
+    imageUrls: Array.isArray(row.image_urls) ? row.image_urls : [],
     invitees,
   };
 }
@@ -106,18 +109,20 @@ export async function getPendingInvitations(req, res) {
 // POST /api/meetings
 export async function createMeeting(req, res) {
   const userId = req.userId;
-  const { title, description, startTime, endTime, color, reminder } = req.body;
+  const { title, description, startTime, endTime, color, reminder, location, meetingLink, imageUrls } = req.body;
 
   if (!title || !startTime) {
     return res.status(400).json({ success: false, message: 'Title and startTime are required' });
   }
 
+  const safeImageUrls = Array.isArray(imageUrls) && imageUrls.length > 0 ? imageUrls : null;
+
   try {
     const result = await pool.query(
-      `INSERT INTO meetings (title, description, start_time, end_time, color, reminder, organizer_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO meetings (title, description, start_time, end_time, color, reminder, organizer_id, location, meeting_link, image_urls)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
-      [title, description || null, startTime, endTime || null, color || null, reminder ?? 15, userId],
+      [title, description || null, startTime, endTime || null, color || null, reminder ?? 15, userId, location || null, meetingLink || null, safeImageUrls],
     );
     const meeting = result.rows[0];
 
