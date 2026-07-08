@@ -5,7 +5,7 @@ import { CLIENT_ID } from "../routes/oauthRoute.js";
 import { computeMeetingsAccess } from "../services/meetingsAccessService.js";
 
 function mapUserRow(user, kingschatId) {
-  const { active: meetingsSubActive, expiresAt: meetingsSubExpiresAt } =
+  const { active: meetingsSubActive, expiresAt: meetingsSubExpiresAt, isFree: meetingsSubIsFree } =
     computeMeetingsAccess(user);
   return {
     id: user.id,
@@ -20,6 +20,7 @@ function mapUserRow(user, kingschatId) {
     isAdmin: user.is_admin === true,
     isPaid: user.is_paid === true,
     meetingsSubActive,
+    meetingsSubIsFree: meetingsSubIsFree === true,
     meetingsSubExpiresAt: meetingsSubExpiresAt || null,
   };
 }
