@@ -9,6 +9,10 @@ import {
   handlePremiumSuccess,
   handlePremiumFailure,
   getAdPaymentStatus,
+  initMeetingsSubscription,
+  handleMeetingsSubSuccess,
+  handleMeetingsSubFailure,
+  getMeetingsSubStatus,
 } from '../controllers/paymentController.js';
 
 const router = express.Router();
@@ -21,5 +25,10 @@ router.post('/premium/init', authRequired, initPremiumPayment);
 router.get('/premium/success', authRequired, handlePremiumSuccess);
 router.get('/premium/failed', authRequired, handlePremiumFailure);
 router.get('/ad-status/:adId', authRequired, getAdPaymentStatus);
+
+router.post('/meetings-sub/init', authRequired, initMeetingsSubscription);
+router.get('/meetings-sub/success', authRequired, handleMeetingsSubSuccess);
+router.get('/meetings-sub/failed', handleMeetingsSubFailure);
+router.get('/meetings-sub/status', authRequired, getMeetingsSubStatus);
 
 export default router;

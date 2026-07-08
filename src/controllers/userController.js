@@ -2,8 +2,11 @@ import axios from "axios";
 import createToken from "../utils/createToken.js";
 import { upsertUser } from "../services/userService.js";
 import { CLIENT_ID } from "../routes/oauthRoute.js";
+import { computeMeetingsAccess } from "../services/meetingsAccessService.js";
 
 function mapUserRow(user, kingschatId) {
+  const { active: meetingsSubActive, expiresAt: meetingsSubExpiresAt } =
+    computeMeetingsAccess(user);
   return {
     id: user.id,
     kingschatId: kingschatId || user.kingschat_id,
@@ -16,6 +19,8 @@ function mapUserRow(user, kingschatId) {
     username: user.username,
     isAdmin: user.is_admin === true,
     isPaid: user.is_paid === true,
+    meetingsSubActive,
+    meetingsSubExpiresAt: meetingsSubExpiresAt || null,
   };
 }
 

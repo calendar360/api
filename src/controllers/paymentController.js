@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import axios from 'axios';
 import pool from '../db/pool.js';
+import { computeMeetingsAccess } from '../services/meetingsAccessService.js';
 
 const MARQUEE_PRICE_PER_DAY = 0.99;
 const MARQUEE_CENTS_PER_DAY = 99;
@@ -484,6 +485,155 @@ export const handlePremiumFailure = async (req, res) => {
   } catch (err) {
     console.error('handlePremiumFailure', err);
     return res.status(500).send(paymentHtml(false, 'Payment failed'));
+  }
+};
+
+// ─── Meetings Subscription ────────────────────────────────────────────────────
+
+const MEETINGS_SUB_PRICE = 0.29;
+
+export const initMeetingsSubscription = async (req, res) => {
+  try {
+    const baseUrl = backendBaseUrl(req);
+    const success_url = `${baseUrl}/api/payments/meetings-sub/success`;
+    const fail_url = `${baseUrl}/api/payments/meetings-sub/failed`;
+
+    const payload = {
+      product_sku: `meetings_subscription_${req.userId}`,
+      price: MEETINGS_SUB_PRICE,
+      merchant_wallet: process.env.ESPEES_MERCHANT_WALLET || process.env.ESPEES_WALLET,
+      narration: `Calendar 360 Meetings Subscription (1 month)`,
+      success_url,
+      fail_url,
+    };
+
+    if (!payload.merchant_wallet) {
+      return res.status(500).json({
+        success: false,
+        message: 'ESPEES_MERCHANT_WALLET not configured on server',
+      });
+    }
+
+    const response = await axios.post('https://api.espees.org/payment/product', payload, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 30000,
+    });
+
+    const respData = response.data || {};
+    const payment_id = extractPaymentId(respData);
+    if (!payment_id) {
+      return res.status(502).json({
+        success: false,
+        message: 'Espees did not return a payment id',
+        details: respData,
+      });
+    }
+
+    return res.json({
+      success: true,
+      payment_url: `https://payment.espees.org/pay/${payment_id}`,
+      payment_id,
+      amount: MEETINGS_SUB_PRICE,
+    });
+  } catch (err) {
+    console.error('initMeetingsSubscription', err.response?.data || err.message);
+    return res.status(err.response?.status || 500).json({
+      success: false,
+      message: 'Payment init failed',
+      details: err.response?.data || err.message,
+    });
+  }
+};
+
+export const handleMeetingsSubSuccess = async (req, res) => {
+  try {
+    const transaction_id = req.query.transaction_id || req.query.payment_id || req.query.product_id;
+
+    if (!req.userId) {
+      return res.status(400).send(paymentHtml(false, 'User not authenticated'));
+    }
+
+    const userRes = await pool.query(
+      'SELECT created_at, meetings_sub FROM users WHERE id = $1',
+      [req.userId],
+    );
+    if (!userRes.rows.length) {
+      return res.status(404).send(paymentHtml(false, 'User not found'));
+    }
+    const user = userRes.rows[0];
+
+    let sub = {};
+    try {
+      sub = typeof user.meetings_sub === 'string'
+        ? JSON.parse(user.meetings_sub)
+        : user.meetings_sub || {};
+    } catch (_) {}
+
+    let confirmData = {};
+    if (transaction_id) {
+      try {
+        const confirmResp = await axios.post(
+          'https://api.espees.org/payment/confirm',
+          { product_id: transaction_id },
+          { headers: { 'Content-Type': 'application/json' }, timeout: 20000 },
+        );
+        confirmData = confirmResp.data || {};
+        const returnedAmount = confirmData?.price ?? confirmData?.amount;
+        if (returnedAmount != null && parseFloat(returnedAmount) !== MEETINGS_SUB_PRICE) {
+          await pool.query(`UPDATE users SET meetings_sub = $1 WHERE id = $2`, [
+            JSON.stringify({ ...sub, status: 'Discrepancy', confirmation: confirmData }),
+            req.userId,
+          ]);
+          return res.send(paymentHtml(false, 'Amount mismatch — contact support'));
+        }
+      } catch (confirmErr) {
+        console.error('[espees] meetings-sub confirm', confirmErr.message);
+      }
+    }
+
+    // Extend from current expiry when still active; otherwise start from now.
+    const now = new Date();
+    const currentExpiry = sub.expiresAt ? new Date(sub.expiresAt) : null;
+    const baseDate = currentExpiry && currentExpiry > now ? currentExpiry : now;
+    const newExpiry = new Date(baseDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    const updatedSub = {
+      status: 'active',
+      activatedAt: now.toISOString(),
+      expiresAt: newExpiry.toISOString(),
+      confirmation: confirmData,
+    };
+
+    await pool.query(`UPDATE users SET meetings_sub = $1 WHERE id = $2`, [
+      JSON.stringify(updatedSub), req.userId,
+    ]);
+
+    return res.send(paymentHtml(true, 'Meetings subscription activated for 1 month'));
+  } catch (err) {
+    console.error('handleMeetingsSubSuccess', err);
+    return res.status(500).send(paymentHtml(false, 'Server error'));
+  }
+};
+
+export const handleMeetingsSubFailure = async (req, res) => {
+  const details = req.query.status_details || 'Payment was not completed';
+  return res.send(paymentHtml(false, details));
+};
+
+export const getMeetingsSubStatus = async (req, res) => {
+  try {
+    const userRes = await pool.query(
+      'SELECT created_at, meetings_sub FROM users WHERE id = $1',
+      [req.userId],
+    );
+    if (!userRes.rows.length) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    const { active, expiresAt } = computeMeetingsAccess(userRes.rows[0]);
+    return res.json({ success: true, active, expiresAt });
+  } catch (err) {
+    console.error('getMeetingsSubStatus', err);
+    return res.status(500).json({ success: false, message: err.message });
   }
 };
 

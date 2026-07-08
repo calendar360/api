@@ -163,5 +163,7 @@ export async function ensureSchema() {
   await pool.query(`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS meeting_link TEXT;`);
   await pool.query(`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS image_urls TEXT[] DEFAULT ARRAY[]::TEXT[];`);
 
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS meetings_sub JSONB;`);
+
   console.log('[db] schema ready');
 }

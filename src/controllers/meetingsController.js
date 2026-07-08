@@ -1,5 +1,6 @@
 import pool from '../db/pool.js';
 import { pushToUser } from '../services/fcmService.js';
+import { computeMeetingsAccess } from '../services/meetingsAccessService.js';
 
 function formatMeeting(row, invitees = []) {
   return {
@@ -113,6 +114,28 @@ export async function createMeeting(req, res) {
 
   if (!title || !startTime) {
     return res.status(400).json({ success: false, message: 'Title and startTime are required' });
+  }
+
+  // Subscription guard — free trial or paid subscription required
+  try {
+    const userRow = await pool.query(
+      'SELECT created_at, meetings_sub FROM users WHERE id = $1',
+      [userId],
+    );
+    if (!userRow.rows.length) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    const { active } = computeMeetingsAccess(userRow.rows[0]);
+    if (!active) {
+      return res.status(403).json({
+        success: false,
+        message: 'Meetings subscription required. Subscribe for 0.29 ESP/month.',
+        code: 'MEETINGS_SUB_REQUIRED',
+      });
+    }
+  } catch (e) {
+    console.error('[meetings] subscription check failed:', e);
+    return res.status(500).json({ success: false, message: 'Server error' });
   }
 
   const safeImageUrls = Array.isArray(imageUrls) && imageUrls.length > 0 ? imageUrls : null;
