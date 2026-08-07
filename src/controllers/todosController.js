@@ -10,6 +10,7 @@ function formatTodo(row) {
       : row.due_date,
     reminderAt: row.reminder_at || null,
     isDone: row.is_done === true,
+    groupId: row.group_id || null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -39,25 +40,57 @@ export async function listTodos(req, res) {
 }
 
 // POST /api/todos
+// Body: { title, notes?, dueDates: string[] (>=1), reminderAts?: (string|null)[] }
+// reminderAts, if present, must be the same length as dueDates (parallel arrays) —
+// the client computes each date's own reminder instant so the server never has
+// to do timezone-sensitive date math.
 export async function createTodo(req, res) {
   const userId = req.userId;
-  const { title, notes, dueDate, reminderAt } = req.body;
+  const { title, notes, dueDates, reminderAts } = req.body;
 
-  if (!title || !dueDate) {
-    return res.status(400).json({ success: false, message: 'Title and dueDate are required' });
+  if (!title || !Array.isArray(dueDates) || dueDates.length === 0) {
+    return res.status(400).json({ success: false, message: 'Title and dueDates are required' });
+  }
+  if (reminderAts !== undefined && (!Array.isArray(reminderAts) || reminderAts.length !== dueDates.length)) {
+    return res.status(400).json({ success: false, message: 'reminderAts must match dueDates length' });
   }
 
+  const client = await pool.connect();
   try {
-    const result = await pool.query(
+    await client.query('BEGIN');
+
+    const firstResult = await client.query(
       `INSERT INTO todos (user_id, title, notes, due_date, reminder_at)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING *`,
-      [userId, title, notes || null, dueDate, reminderAt || null],
+      [userId, title, notes || null, dueDates[0], reminderAts?.[0] || null],
     );
-    res.json({ success: true, todo: formatTodo(result.rows[0]) });
+    let rows = [firstResult.rows[0]];
+
+    if (dueDates.length > 1) {
+      const leaderId = firstResult.rows[0].id;
+      await client.query('UPDATE todos SET group_id = $1 WHERE id = $1', [leaderId]);
+      rows[0].group_id = leaderId;
+
+      for (let i = 1; i < dueDates.length; i++) {
+        const result = await client.query(
+          `INSERT INTO todos (user_id, title, notes, due_date, reminder_at, group_id)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           RETURNING *`,
+          [userId, title, notes || null, dueDates[i], reminderAts?.[i] || null, leaderId],
+        );
+        rows.push(result.rows[0]);
+      }
+    }
+
+    await client.query('COMMIT');
+    res.json({ success: true, todos: rows.map(formatTodo) });
   } catch (e) {
+    await client.query('ROLLBACK');
     console.error('[todos] createTodo:', e);
     res.status(500).json({ success: false, message: 'Server error' });
+  } finally {
+    client.release();
   }
 }
 

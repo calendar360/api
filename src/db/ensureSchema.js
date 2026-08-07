@@ -180,5 +180,8 @@ export async function ensureSchema() {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_todos_user_due_date ON todos(user_id, due_date);`);
 
+  await pool.query(`ALTER TABLE todos ADD COLUMN IF NOT EXISTS group_id INT REFERENCES todos(id) ON DELETE SET NULL;`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_todos_group ON todos(group_id);`);
+
   console.log('[db] schema ready');
 }
