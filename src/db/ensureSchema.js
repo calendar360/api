@@ -165,5 +165,20 @@ export async function ensureSchema() {
 
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS meetings_sub JSONB;`);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS todos (
+      id SERIAL PRIMARY KEY,
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title VARCHAR(500) NOT NULL,
+      notes TEXT,
+      due_date DATE NOT NULL,
+      reminder_at TIMESTAMPTZ,
+      is_done BOOLEAN NOT NULL DEFAULT false,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_todos_user_due_date ON todos(user_id, due_date);`);
+
   console.log('[db] schema ready');
 }
