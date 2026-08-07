@@ -182,6 +182,19 @@ export async function ensureSchema() {
 
   await pool.query(`ALTER TABLE todos ADD COLUMN IF NOT EXISTS group_id INT REFERENCES todos(id) ON DELETE SET NULL;`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_todos_group ON todos(group_id);`);
+  await pool.query(`ALTER TABLE todos ADD COLUMN IF NOT EXISTS color VARCHAR(20);`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS todo_subtasks (
+      id SERIAL PRIMARY KEY,
+      todo_id INT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+      title VARCHAR(500) NOT NULL,
+      is_done BOOLEAN NOT NULL DEFAULT false,
+      position INT DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_todo_subtasks_todo ON todo_subtasks(todo_id);`);
 
   console.log('[db] schema ready');
 }
