@@ -490,19 +490,25 @@ export const handlePremiumFailure = async (req, res) => {
 
 // ─── Meetings Subscription ────────────────────────────────────────────────────
 
-const MEETINGS_SUB_PRICE = 0.29;
+const MEETINGS_SUB_PLANS = {
+  monthly: { price: 0.29, days: 30, label: '1 month' },
+  yearly: { price: 2.99, days: 365, label: '1 year' },
+};
 
 export const initMeetingsSubscription = async (req, res) => {
   try {
+    const planKey = MEETINGS_SUB_PLANS[req.body?.plan] ? req.body.plan : 'monthly';
+    const plan = MEETINGS_SUB_PLANS[planKey];
+
     const baseUrl = backendBaseUrl(req);
-    const success_url = `${baseUrl}/api/payments/meetings-sub/success`;
-    const fail_url = `${baseUrl}/api/payments/meetings-sub/failed`;
+    const success_url = `${baseUrl}/api/payments/meetings-sub/success?plan=${planKey}`;
+    const fail_url = `${baseUrl}/api/payments/meetings-sub/failed?plan=${planKey}`;
 
     const payload = {
-      product_sku: `meetings_subscription_${req.userId}`,
-      price: MEETINGS_SUB_PRICE,
+      product_sku: `meetings_subscription_${planKey}_${req.userId}`,
+      price: plan.price,
       merchant_wallet: process.env.ESPEES_MERCHANT_WALLET || process.env.ESPEES_WALLET,
-      narration: `Calendar 360 Meetings Subscription (1 month)`,
+      narration: `Calendar 360 Meetings Subscription (${plan.label})`,
       success_url,
       fail_url,
     };
@@ -533,7 +539,8 @@ export const initMeetingsSubscription = async (req, res) => {
       success: true,
       payment_url: `https://payment.espees.org/pay/${payment_id}`,
       payment_id,
-      amount: MEETINGS_SUB_PRICE,
+      plan: planKey,
+      amount: plan.price,
     });
   } catch (err) {
     console.error('initMeetingsSubscription', err.response?.data || err.message);
@@ -548,6 +555,8 @@ export const initMeetingsSubscription = async (req, res) => {
 export const handleMeetingsSubSuccess = async (req, res) => {
   try {
     const transaction_id = req.query.transaction_id || req.query.payment_id || req.query.product_id;
+    const planKey = MEETINGS_SUB_PLANS[req.query.plan] ? req.query.plan : 'monthly';
+    const plan = MEETINGS_SUB_PLANS[planKey];
 
     if (!req.userId) {
       return res.status(400).send(paymentHtml(false, 'User not authenticated'));
@@ -579,7 +588,7 @@ export const handleMeetingsSubSuccess = async (req, res) => {
         );
         confirmData = confirmResp.data || {};
         const returnedAmount = confirmData?.price ?? confirmData?.amount;
-        if (returnedAmount != null && parseFloat(returnedAmount) !== MEETINGS_SUB_PRICE) {
+        if (returnedAmount != null && parseFloat(returnedAmount) !== plan.price) {
           await pool.query(`UPDATE users SET meetings_sub = $1 WHERE id = $2`, [
             JSON.stringify({ ...sub, status: 'Discrepancy', confirmation: confirmData }),
             req.userId,
@@ -595,10 +604,11 @@ export const handleMeetingsSubSuccess = async (req, res) => {
     const now = new Date();
     const currentExpiry = sub.expiresAt ? new Date(sub.expiresAt) : null;
     const baseDate = currentExpiry && currentExpiry > now ? currentExpiry : now;
-    const newExpiry = new Date(baseDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+    const newExpiry = new Date(baseDate.getTime() + plan.days * 24 * 60 * 60 * 1000);
 
     const updatedSub = {
       status: 'active',
+      plan: planKey,
       activatedAt: now.toISOString(),
       expiresAt: newExpiry.toISOString(),
       confirmation: confirmData,
@@ -608,7 +618,7 @@ export const handleMeetingsSubSuccess = async (req, res) => {
       JSON.stringify(updatedSub), req.userId,
     ]);
 
-    return res.send(paymentHtml(true, 'Meetings subscription activated for 1 month'));
+    return res.send(paymentHtml(true, `Meetings subscription activated for ${plan.label}`));
   } catch (err) {
     console.error('handleMeetingsSubSuccess', err);
     return res.status(500).send(paymentHtml(false, 'Server error'));
