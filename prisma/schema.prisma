@@ -1,6 +1,3 @@
-// Calendar 360 — PostgreSQL schema (use Prisma Studio or Client to query/edit)
-// Run: npm run db:generate && npm run db:push
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -11,74 +8,82 @@ datasource db {
 }
 
 model User {
-  id                    Int       @id @default(autoincrement())
-  name                  String    @db.VarChar(255)
-  email                 String    @unique @db.VarChar(255)
-  password              String?   @db.VarChar(255)
-  firebaseUid           String?   @unique @map("firebase_uid") @db.VarChar(255)
-  firstName             String?   @map("first_name") @db.VarChar(255)
-  lastName              String?   @map("last_name") @db.VarChar(255)
-  username              String?   @db.VarChar(255)
+  id                    Int                @id @default(autoincrement())
+  name                  String             @db.VarChar(255)
+  email                 String             @unique @db.VarChar(255)
+  password              String?            @db.VarChar(255)
+  firebaseUid           String?            @unique @map("firebase_uid") @db.VarChar(255)
+  firstName             String?            @map("first_name") @db.VarChar(255)
+  lastName              String?            @map("last_name") @db.VarChar(255)
+  username              String?            @db.VarChar(255)
   /// Toggle in Prisma Studio: true = admin, false = member
-  isAdmin               Boolean   @default(false) @map("is_admin")
-  isPaid                Boolean   @default(false) @map("is_paid")
-  fcmToken              String?   @map("fcm_token")
-  kingschatId           String?   @map("kingschat_id") @db.VarChar(255)
-  kingschatRefreshToken String?   @map("kingschat_refresh_token") @db.VarChar(255)
-  kingschatAccessToken  String?   @map("kingschat_access_token")
-  avatar                String?   @db.VarChar(500)
-  profilePhoto          String?   @map("profile_photo") @db.VarChar(500)
-  createdAt             DateTime  @default(now()) @map("created_at")
-  updatedAt             DateTime  @default(now()) @updatedAt @map("updated_at")
-
-  eventsCreated   Event[]           @relation("EventCreator")
-  birthdayWishes  BirthdayWish[]
-  wordsForMonth   WordForMonth[]
-  advertisements  Advertisement[]
-  themesOfYear    ThemeOfYear[]
-  onThisDayPosts  OnThisDay[]
+  isAdmin               Boolean            @default(false) @map("is_admin")
+  kingschatId           String?            @map("kingschat_id") @db.VarChar(255)
+  kingschatRefreshToken String?            @map("kingschat_refresh_token") @db.VarChar(255)
+  kingschatAccessToken  String?            @map("kingschat_access_token")
+  avatar                String?            @db.VarChar(500)
+  profilePhoto          String?            @map("profile_photo") @db.VarChar(500)
+  createdAt             DateTime           @default(now()) @map("created_at")
+  updatedAt             DateTime           @default(now()) @updatedAt @map("updated_at")
+  isPaid                Boolean            @default(false) @map("is_paid")
+  fcmToken              String?            @map("fcm_token")
+  meetings_sub          Json?
+  advertisements        Advertisement[]
+  birthdayWishes        BirthdayWish[]
+  eventsCreated         Event[]            @relation("EventCreator")
+  meeting_invitees      meeting_invitees[]
+  meetings              meetings[]
+  onThisDayPosts        OnThisDay[]
+  themesOfYear          ThemeOfYear[]
+  todos                 todos[]
+  wordsForMonth         WordForMonth[]
 
   @@map("users")
 }
 
 model Advertisement {
-  id          Int      @id @default(autoincrement())
-  userId      Int      @map("user_id")
-  title       String   @db.VarChar(255)
-  description String?
-  imagePath   String?  @map("image_path") @db.VarChar(500)
-  linkUrl     String?  @map("link_url") @db.VarChar(500)
-  startAt     DateTime @map("start_at") @db.Timestamptz
-  endAt       DateTime @map("end_at") @db.Timestamptz
-  amountCents Int      @default(0) @map("amount_cents")
-  status      String   @default("active") @db.VarChar(32)
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  id            Int      @id @default(autoincrement())
+  userId        Int      @map("user_id")
+  title         String   @db.VarChar(255)
+  description   String?
+  imagePath     String?  @map("image_path") @db.VarChar(500)
+  linkUrl       String?  @map("link_url") @db.VarChar(500)
+  startAt       DateTime @map("start_at") @db.Timestamptz(6)
+  endAt         DateTime @map("end_at") @db.Timestamptz(6)
+  amountCents   Int      @default(0) @map("amount_cents")
+  status        String   @default("active") @db.VarChar(32)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  payment_id    String?  @db.VarChar(255)
+  payment       Json?
+  duration_days Int?     @default(1)
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
+  @@index([status, endAt], map: "idx_ads_active")
+  @@index([payment_id], map: "idx_ads_payment_id")
   @@map("advertisements")
 }
 
 model Event {
-  id              String    @id @db.VarChar(64)
-  title           String    @db.VarChar(500)
-  type            String    @default("event") @db.VarChar(100)
-  startTime       DateTime? @map("start_time") @db.Timestamptz
-  endTime         DateTime? @map("end_time") @db.Timestamptz
-  createdByUserId Int?      @map("created_by_user_id")
-  isGlobal        Boolean   @default(false) @map("is_global")
-  isYearly        Boolean   @default(false) @map("is_yearly")
-  color           String?   @db.VarChar(20)
-  reminder        Int       @default(0)
+  id              String         @id @db.VarChar(64)
+  title           String         @db.VarChar(500)
+  type            String         @default("event") @db.VarChar(100)
+  startTime       DateTime?      @map("start_time") @db.Timestamptz(6)
+  endTime         DateTime?      @map("end_time") @db.Timestamptz(6)
+  createdByUserId Int?           @map("created_by_user_id")
+  isGlobal        Boolean        @default(false) @map("is_global")
+  color           String?        @db.VarChar(20)
+  reminder        Int            @default(0)
   description     String?
-  imagePath       String?   @map("image_path") @db.VarChar(500)
-  watchUrl        String?   @map("watch_url") @db.VarChar(500)
-  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  imagePath       String?        @map("image_path") @db.VarChar(500)
+  watchUrl        String?        @map("watch_url") @db.VarChar(500)
+  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  isYearly        Boolean        @default(false) @map("is_yearly")
+  birthdayWishes  BirthdayWish[]
+  createdBy       User?          @relation("EventCreator", fields: [createdByUserId], references: [id])
 
-  createdBy      User?            @relation("EventCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  birthdayWishes BirthdayWish[]
-
+  @@index([isGlobal], map: "idx_events_global")
+  @@index([startTime], map: "idx_events_start")
   @@map("events")
 }
 
@@ -88,47 +93,46 @@ model BirthdayWish {
   userId    Int?     @map("user_id")
   userName  String   @map("user_name") @db.VarChar(255)
   message   String
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user      User?    @relation(fields: [userId], references: [id])
 
-  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  user  User? @relation(fields: [userId], references: [id], onDelete: SetNull)
-
+  @@index([eventId], map: "idx_wishes_event")
   @@map("birthday_wishes")
 }
 
 model AppSetting {
   key       String   @id @db.VarChar(100)
   value     String?
-  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@map("app_settings")
 }
 
 model ThemeOfYear {
-  id              Int       @id @default(autoincrement())
-  year            Int       @unique
-  title           String    @db.VarChar(500)
+  id              Int      @id @default(autoincrement())
+  year            Int      @unique
+  title           String   @db.VarChar(500)
   description     String?
-  imagePath       String?   @map("image_path") @db.VarChar(500)
-  createdByUserId Int?      @map("created_by_user_id")
-  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  imagePath       String?  @map("image_path") @db.VarChar(500)
+  createdByUserId Int?     @map("created_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy       User?    @relation(fields: [createdByUserId], references: [id])
 
-  createdBy User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
-
+  @@index([year], map: "idx_theme_year")
   @@map("theme_of_year")
 }
 
 model OnThisDay {
-  id              Int       @id @default(autoincrement())
-  title           String    @db.VarChar(500)
+  id              Int      @id @default(autoincrement())
+  title           String   @db.VarChar(500)
   description     String?
-  imagePath       String?   @map("image_path") @db.VarChar(500)
-  createdByUserId Int?      @map("created_by_user_id")
-  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
-
-  createdBy User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  imagePath       String?  @map("image_path") @db.VarChar(500)
+  createdByUserId Int?     @map("created_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy       User?    @relation(fields: [createdByUserId], references: [id])
 
   @@map("on_this_day")
 }
@@ -139,9 +143,77 @@ model WordForMonth {
   month           String?  @db.VarChar(32)
   year            Int?
   createdByUserId Int?     @map("created_by_user_id")
-  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
-
-  createdBy User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdBy       User?    @relation(fields: [createdByUserId], references: [id])
 
   @@map("words_for_month")
+}
+
+model meeting_invitees {
+  id           Int       @id @default(autoincrement())
+  meeting_id   Int
+  user_id      Int
+  status       String?   @default("pending") @db.VarChar(20)
+  responded_at DateTime? @db.Timestamptz(6)
+  created_at   DateTime? @default(now()) @db.Timestamptz(6)
+  meetings     meetings  @relation(fields: [meeting_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users        User      @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([meeting_id, user_id])
+  @@index([meeting_id], map: "idx_meeting_invitees_meeting")
+  @@index([user_id, status], map: "idx_meeting_invitees_user")
+}
+
+model meetings {
+  id               Int                @id @default(autoincrement())
+  title            String             @db.VarChar(500)
+  description      String?
+  start_time       DateTime           @db.Timestamptz(6)
+  end_time         DateTime?          @db.Timestamptz(6)
+  color            String?            @db.VarChar(20)
+  reminder         Int?               @default(15)
+  organizer_id     Int
+  created_at       DateTime?          @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime?          @default(now()) @db.Timestamptz(6)
+  location         String?            @db.VarChar(500)
+  meeting_link     String?
+  image_urls       String[]           @default([])
+  meeting_invitees meeting_invitees[]
+  users            User               @relation(fields: [organizer_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([organizer_id], map: "idx_meetings_organizer")
+  @@index([start_time], map: "idx_meetings_start")
+}
+
+model todo_subtasks {
+  id         Int       @id @default(autoincrement())
+  todo_id    Int
+  title      String    @db.VarChar(500)
+  is_done    Boolean   @default(false)
+  position   Int?      @default(0)
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+  todos      todos     @relation(fields: [todo_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([todo_id], map: "idx_todo_subtasks_todo")
+}
+
+model todos {
+  id            Int             @id @default(autoincrement())
+  user_id       Int
+  title         String          @db.VarChar(500)
+  notes         String?
+  due_date      DateTime        @db.Date
+  reminder_at   DateTime?       @db.Timestamptz(6)
+  is_done       Boolean         @default(false)
+  created_at    DateTime?       @default(now()) @db.Timestamptz(6)
+  updated_at    DateTime?       @default(now()) @db.Timestamptz(6)
+  group_id      Int?
+  color         String?         @db.VarChar(20)
+  todo_subtasks todo_subtasks[]
+  todos         todos?          @relation("todosTotodos", fields: [group_id], references: [id], onUpdate: NoAction)
+  other_todos   todos[]         @relation("todosTotodos")
+  users         User            @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([group_id], map: "idx_todos_group")
+  @@index([user_id, due_date], map: "idx_todos_user_due_date")
 }
