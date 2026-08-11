@@ -245,6 +245,7 @@ export const listWishes = async (req, res) => {
       wishes: result.rows.map((w) => ({
         id: w.id,
         eventId: w.event_id,
+        userId: w.user_id,
         userName: w.user_name,
         message: w.message,
         createdAt: w.created_at,
@@ -289,6 +290,7 @@ export const createWish = async (req, res) => {
       wish: {
         id: w.id,
         eventId: w.event_id,
+        userId: w.user_id,
         userName: w.user_name,
         message: w.message,
         createdAt: w.created_at,
@@ -296,6 +298,70 @@ export const createWish = async (req, res) => {
     });
   } catch (error) {
     console.error('createWish', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const updateWish = async (req, res) => {
+  try {
+    const { id: eventId, wishId } = req.params;
+    const { message } = req.body;
+    if (!message?.trim()) {
+      return res.status(400).json({ success: false, message: 'message required' });
+    }
+
+    const existing = await pool.query(
+      'SELECT * FROM birthday_wishes WHERE id = $1 AND event_id = $2',
+      [wishId, eventId],
+    );
+    if (!existing.rows.length) {
+      return res.status(404).json({ success: false, message: 'Message not found' });
+    }
+    if (existing.rows[0].user_id !== req.userId) {
+      return res.status(403).json({ success: false, message: 'Not your message' });
+    }
+
+    const result = await pool.query(
+      `UPDATE birthday_wishes SET message = $1 WHERE id = $2 RETURNING *`,
+      [message.trim(), wishId],
+    );
+
+    const w = result.rows[0];
+    res.json({
+      success: true,
+      wish: {
+        id: w.id,
+        eventId: w.event_id,
+        userId: w.user_id,
+        userName: w.user_name,
+        message: w.message,
+        createdAt: w.created_at,
+      },
+    });
+  } catch (error) {
+    console.error('updateWish', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const deleteWish = async (req, res) => {
+  try {
+    const { id: eventId, wishId } = req.params;
+    const existing = await pool.query(
+      'SELECT * FROM birthday_wishes WHERE id = $1 AND event_id = $2',
+      [wishId, eventId],
+    );
+    if (!existing.rows.length) {
+      return res.status(404).json({ success: false, message: 'Message not found' });
+    }
+    if (existing.rows[0].user_id !== req.userId) {
+      return res.status(403).json({ success: false, message: 'Not your message' });
+    }
+
+    await pool.query('DELETE FROM birthday_wishes WHERE id = $1', [wishId]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('deleteWish', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
