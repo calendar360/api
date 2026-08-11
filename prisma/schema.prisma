@@ -79,6 +79,7 @@ model Event {
   createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
   isYearly        Boolean        @default(false) @map("is_yearly")
+  hideTime        Boolean        @default(false) @map("hide_time")
   birthdayWishes  BirthdayWish[]
   createdBy       User?          @relation("EventCreator", fields: [createdByUserId], references: [id])
 
