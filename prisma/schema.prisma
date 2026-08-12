@@ -119,6 +119,7 @@ model ThemeOfYear {
   createdByUserId Int?     @map("created_by_user_id")
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  linkUrl         String?  @map("link_url") @db.VarChar(1000)
   createdBy       User?    @relation(fields: [createdByUserId], references: [id])
 
   @@index([year], map: "idx_theme_year")
@@ -145,6 +146,7 @@ model WordForMonth {
   year            Int?
   createdByUserId Int?     @map("created_by_user_id")
   updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  linkUrl         String?  @map("link_url") @db.VarChar(1000)
   createdBy       User?    @relation(fields: [createdByUserId], references: [id])
 
   @@map("words_for_month")
