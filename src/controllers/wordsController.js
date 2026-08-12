@@ -4,7 +4,7 @@ import { pushGlobalEvent } from '../services/fcmService.js';
 export const listWords = async (_req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, word, month, year, updated_at FROM words_for_month ORDER BY year DESC, month ASC`,
+      `SELECT id, word, month, year, link_url, updated_at FROM words_for_month ORDER BY year DESC, month ASC`,
     );
     res.json({
       success: true,
@@ -13,6 +13,7 @@ export const listWords = async (_req, res) => {
         word: r.word,
         month: r.month,
         year: r.year,
+        linkUrl: r.link_url,
         updatedAt: r.updated_at,
       })),
     });
@@ -25,7 +26,7 @@ export const listWords = async (_req, res) => {
 export const upsertWord = async (req, res) => {
   try {
     const { id } = req.params;
-    const { word, month, year } = req.body;
+    const { word, month, year, linkUrl } = req.body;
     if (!word?.trim()) {
       return res.status(400).json({ success: false, message: 'word required' });
     }
@@ -36,15 +37,16 @@ export const upsertWord = async (req, res) => {
     }
 
     await pool.query(
-      `INSERT INTO words_for_month (id, word, month, year, created_by_user_id, updated_at)
-       VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+      `INSERT INTO words_for_month (id, word, month, year, link_url, created_by_user_id, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
        ON CONFLICT (id) DO UPDATE SET
          word = EXCLUDED.word,
          month = EXCLUDED.month,
          year = EXCLUDED.year,
+         link_url = EXCLUDED.link_url,
          created_by_user_id = EXCLUDED.created_by_user_id,
          updated_at = CURRENT_TIMESTAMP`,
-      [id, word.trim(), month, year, req.userId],
+      [id, word.trim(), month, year, linkUrl?.trim() || null, req.userId],
     );
 
     const row = (await pool.query('SELECT * FROM words_for_month WHERE id = $1', [id])).rows[0];
@@ -64,6 +66,7 @@ export const upsertWord = async (req, res) => {
         word: row.word,
         month: row.month,
         year: row.year,
+        linkUrl: row.link_url,
         updatedAt: row.updated_at,
       },
       fcm: fcmResult,

@@ -10,6 +10,7 @@ function mapTheme(row, req) {
     description: row.description,
     imagePath: row.image_path,
     imageUrl: row.image_path ? uploadPublicUrl(req, row.image_path) : null,
+    linkUrl: row.link_url,
     createdAt: row.created_at,
   };
 }
@@ -52,14 +53,14 @@ async function requireAdmin(req, res) {
 export const createTheme = async (req, res) => {
   try {
     if (!await requireAdmin(req, res)) return;
-    const { year, title, description, imagePath } = req.body;
+    const { year, title, description, imagePath, linkUrl } = req.body;
     if (!year || !title) {
       return res.status(400).json({ success: false, message: 'year and title required' });
     }
     const result = await pool.query(
-      `INSERT INTO theme_of_year (year, title, description, image_path, created_by_user_id)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [year, title, description ?? null, imagePath ?? null, req.userId],
+      `INSERT INTO theme_of_year (year, title, description, image_path, link_url, created_by_user_id)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [year, title, description ?? null, imagePath ?? null, linkUrl ?? null, req.userId],
     );
     const theme = mapTheme(result.rows[0], req);
 
@@ -84,7 +85,7 @@ export const updateTheme = async (req, res) => {
   try {
     if (!await requireAdmin(req, res)) return;
     const { id } = req.params;
-    const { year, title, description, imagePath } = req.body;
+    const { year, title, description, imagePath, linkUrl } = req.body;
     const existing = await pool.query(`SELECT id FROM theme_of_year WHERE id = $1`, [id]);
     if (!existing.rows.length) {
       return res.status(404).json({ success: false, message: 'Theme not found' });
@@ -95,9 +96,10 @@ export const updateTheme = async (req, res) => {
         title = COALESCE($2, title),
         description = COALESCE($3, description),
         image_path = COALESCE($4, image_path),
+        link_url = COALESCE($5, link_url),
         updated_at = CURRENT_TIMESTAMP
-       WHERE id = $5 RETURNING *`,
-      [year ?? null, title ?? null, description ?? null, imagePath ?? null, id],
+       WHERE id = $6 RETURNING *`,
+      [year ?? null, title ?? null, description ?? null, imagePath ?? null, linkUrl ?? null, id],
     );
     const theme = mapTheme(result.rows[0], req);
 
