@@ -96,6 +96,7 @@ export async function ensureSchema() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_paid BOOLEAN DEFAULT false;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS fcm_token TEXT;`);
   await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS hide_time BOOLEAN DEFAULT false;`);
+  await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS person_name VARCHAR(255);`);
   await pool.query(`ALTER TABLE words_for_month ADD COLUMN IF NOT EXISTS link_url VARCHAR(1000);`);
   await pool.query(`ALTER TABLE theme_of_year ADD COLUMN IF NOT EXISTS link_url VARCHAR(1000);`);
   await pool.query(`ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS payment_id VARCHAR(255);`);

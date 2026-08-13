@@ -13,6 +13,7 @@ function mapEvent(row, req) {
     isGlobal: row.is_global === true,
     isYearly: row.is_yearly === true,
     hideTime: row.hide_time === true,
+    personName: row.person_name,
     color: row.color,
     reminder: row.reminder,
     description: row.description,
@@ -57,6 +58,7 @@ export const createEvent = async (req, res) => {
       isGlobal,
       isYearly,
       hideTime,
+      personName,
       color,
       reminder,
       description,
@@ -93,8 +95,8 @@ export const createEvent = async (req, res) => {
     await pool.query(
       `INSERT INTO events (
         id, title, type, start_time, end_time, created_by_user_id, is_global,
-        is_yearly, hide_time, color, reminder, description, image_path, watch_url
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+        is_yearly, hide_time, person_name, color, reminder, description, image_path, watch_url
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
       [
         eventId,
         title,
@@ -105,6 +107,7 @@ export const createEvent = async (req, res) => {
         global,
         isYearly === true,
         hideTime === true,
+        personName,
         color,
         reminder ?? 0,
         description,
@@ -168,13 +171,14 @@ export const updateEvent = async (req, res) => {
         is_global = COALESCE($5, is_global),
         is_yearly = COALESCE($6, is_yearly),
         hide_time = COALESCE($7, hide_time),
-        color = COALESCE($8, color),
-        reminder = COALESCE($9, reminder),
-        description = COALESCE($10, description),
-        image_path = COALESCE($11, image_path),
-        watch_url = COALESCE($12, watch_url),
+        person_name = COALESCE($8, person_name),
+        color = COALESCE($9, color),
+        reminder = COALESCE($10, reminder),
+        description = COALESCE($11, description),
+        image_path = COALESCE($12, image_path),
+        watch_url = COALESCE($13, watch_url),
         updated_at = CURRENT_TIMESTAMP
-      WHERE id = $13`,
+      WHERE id = $14`,
       [
         fields.title,
         fields.type,
@@ -183,6 +187,7 @@ export const updateEvent = async (req, res) => {
         fields.isGlobal,
         fields.isYearly === true ? true : (fields.isYearly === false ? false : null),
         fields.hideTime === true ? true : (fields.hideTime === false ? false : null),
+        fields.personName,
         fields.color,
         fields.reminder,
         fields.description,
@@ -230,6 +235,34 @@ export const deleteEvent = async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('deleteEvent', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+export const listImportantBirthdays = async (req, res) => {
+  try {
+    const userId = req.userId;
+    const birthdayFilter = `(LOWER(type) LIKE '%birthday%' OR LOWER(title) LIKE '%birthday%')`;
+    let result;
+    if (userId) {
+      result = await pool.query(
+        `SELECT * FROM events WHERE ${birthdayFilter} AND (is_global = true OR created_by_user_id = $1) ORDER BY start_time ASC`,
+        [userId],
+      );
+    } else {
+      result = await pool.query(
+        `SELECT * FROM events WHERE ${birthdayFilter} AND is_global = true ORDER BY start_time ASC`,
+      );
+    }
+    res.json({
+      success: true,
+      birthdays: result.rows.map((row) => ({
+        ...mapEvent(row, req),
+        displayTitle: row.person_name ? `${row.person_name}'s Birthday` : row.title,
+      })),
+    });
+  } catch (error) {
+    console.error('listImportantBirthdays', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
