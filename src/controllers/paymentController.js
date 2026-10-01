@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import axios from 'axios';
 import pool from '../db/pool.js';
 import { computeMeetingsAccess } from '../services/meetingsAccessService.js';
+import { signedRefQuery, verifiedUserId } from '../services/paymentRefService.js';
 
 const MARQUEE_PRICE_PER_DAY = 0.99;
 const MARQUEE_CENTS_PER_DAY = 99;
@@ -144,8 +145,11 @@ async function activateMarqueeAd(adId, confirmData = {}) {
 export const initPremiumPayment = async (req, res) => {
   try {
     const baseUrl = backendBaseUrl(req);
-    const success_url = `${baseUrl}/api/payments/premium/success`;
-    const fail_url = `${baseUrl}/api/payments/premium/failed`;
+    // Signed for the same reason as the meetings subscription — see
+    // paymentRefService.
+    const ref = signedRefQuery('premium', req.userId, null);
+    const success_url = `${baseUrl}/api/payments/premium/success?${ref}`;
+    const fail_url = `${baseUrl}/api/payments/premium/failed?${ref}`;
 
     const payload = {
       product_sku: `premium_subscription_${req.userId}`,
@@ -392,11 +396,12 @@ export const handlePremiumSuccess = async (req, res) => {
   try {
     const transaction_id = req.query.transaction_id || req.query.payment_id || req.query.product_id;
 
-    if (!req.userId) {
-      return res.status(400).send(paymentHtml(false, 'User not authenticated'));
+    const userId = verifiedUserId('premium', req.query, null);
+    if (!userId) {
+      return res.status(400).send(paymentHtml(false, 'This payment link is not valid'));
     }
 
-    const userRes = await pool.query('SELECT * FROM users WHERE id = $1', [req.userId]);
+    const userRes = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
     if (!userRes.rows.length) {
       return res.status(404).send(paymentHtml(false, 'User not found'));
     }
@@ -430,7 +435,7 @@ export const handlePremiumSuccess = async (req, res) => {
                 status: 'Discrepancy',
                 confirmation: confirmData,
               }),
-              req.userId,
+              userId,
             ],
           );
           return res.send(paymentHtml(false, 'Amount mismatch — contact support'));
@@ -453,7 +458,7 @@ export const handlePremiumSuccess = async (req, res) => {
 
     await pool.query(
       `UPDATE users SET premium_data = $1 WHERE id = $2`,
-      [JSON.stringify(updatedData), req.userId],
+      [JSON.stringify(updatedData), userId],
     );
 
     return res.send(paymentHtml(true, 'Premium subscription activated'));
@@ -465,8 +470,9 @@ export const handlePremiumSuccess = async (req, res) => {
 
 export const handlePremiumFailure = async (req, res) => {
   try {
-    if (req.userId) {
-      const userRes = await pool.query('SELECT * FROM users WHERE id = $1', [req.userId]);
+    const userId = verifiedUserId('premium', req.query, null);
+    if (userId) {
+      const userRes = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
       if (userRes.rows.length) {
         const user = userRes.rows[0];
         let premiumData = {};
@@ -476,7 +482,7 @@ export const handlePremiumFailure = async (req, res) => {
 
         await pool.query(
           `UPDATE users SET premium_data = $1 WHERE id = $2`,
-          [JSON.stringify({ ...premiumData, status: 'payment_failed' }), req.userId],
+          [JSON.stringify({ ...premiumData, status: 'payment_failed' }), userId],
         );
       }
     }
@@ -501,8 +507,11 @@ export const initMeetingsSubscription = async (req, res) => {
     const plan = MEETINGS_SUB_PLANS[planKey];
 
     const baseUrl = backendBaseUrl(req);
-    const success_url = `${baseUrl}/api/payments/meetings-sub/success?plan=${planKey}`;
-    const fail_url = `${baseUrl}/api/payments/meetings-sub/failed?plan=${planKey}`;
+    // The return URLs carry a signed user id. Espees reaches them by redirect,
+    // which cannot send the `token` header that authRequired reads.
+    const ref = signedRefQuery('meetings-sub', req.userId, planKey);
+    const success_url = `${baseUrl}/api/payments/meetings-sub/success?${ref}`;
+    const fail_url = `${baseUrl}/api/payments/meetings-sub/failed?${ref}`;
 
     const payload = {
       product_sku: `meetings_subscription_${planKey}_${req.userId}`,
@@ -558,13 +567,14 @@ export const handleMeetingsSubSuccess = async (req, res) => {
     const planKey = MEETINGS_SUB_PLANS[req.query.plan] ? req.query.plan : 'monthly';
     const plan = MEETINGS_SUB_PLANS[planKey];
 
-    if (!req.userId) {
-      return res.status(400).send(paymentHtml(false, 'User not authenticated'));
+    const userId = verifiedUserId('meetings-sub', req.query, planKey);
+    if (!userId) {
+      return res.status(400).send(paymentHtml(false, 'This payment link is not valid'));
     }
 
     const userRes = await pool.query(
-      'SELECT created_at, meetings_sub FROM users WHERE id = $1',
-      [req.userId],
+      'SELECT meetings_sub FROM users WHERE id = $1',
+      [userId],
     );
     if (!userRes.rows.length) {
       return res.status(404).send(paymentHtml(false, 'User not found'));
@@ -591,7 +601,7 @@ export const handleMeetingsSubSuccess = async (req, res) => {
         if (returnedAmount != null && parseFloat(returnedAmount) !== plan.price) {
           await pool.query(`UPDATE users SET meetings_sub = $1 WHERE id = $2`, [
             JSON.stringify({ ...sub, status: 'Discrepancy', confirmation: confirmData }),
-            req.userId,
+            userId,
           ]);
           return res.send(paymentHtml(false, 'Amount mismatch — contact support'));
         }
@@ -615,7 +625,7 @@ export const handleMeetingsSubSuccess = async (req, res) => {
     };
 
     await pool.query(`UPDATE users SET meetings_sub = $1 WHERE id = $2`, [
-      JSON.stringify(updatedSub), req.userId,
+      JSON.stringify(updatedSub), userId,
     ]);
 
     return res.send(paymentHtml(true, `Meetings subscription activated for ${plan.label}`));
@@ -633,14 +643,22 @@ export const handleMeetingsSubFailure = async (req, res) => {
 export const getMeetingsSubStatus = async (req, res) => {
   try {
     const userRes = await pool.query(
-      'SELECT created_at, meetings_sub FROM users WHERE id = $1',
+      'SELECT meetings_sub, meetings_free_used FROM users WHERE id = $1',
       [req.userId],
     );
     if (!userRes.rows.length) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
-    const { active, expiresAt } = computeMeetingsAccess(userRes.rows[0]);
-    return res.json({ success: true, active, expiresAt });
+    const { active, expiresAt, isFree, freeUsesLeft, freeUsesTotal } =
+      computeMeetingsAccess(userRes.rows[0]);
+    return res.json({
+      success: true,
+      active,
+      expiresAt,
+      isFree,
+      freeUsesLeft,
+      freeUsesTotal,
+    });
   } catch (err) {
     console.error('getMeetingsSubStatus', err);
     return res.status(500).json({ success: false, message: err.message });

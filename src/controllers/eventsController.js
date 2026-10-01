@@ -2,6 +2,51 @@ import pool from '../db/pool.js';
 import { pushGlobalEvent } from '../services/fcmService.js';
 import { uploadPublicUrl } from '../utils/publicUrl.js';
 
+/** Birthdays are events whose type or title mentions "birthday" — same rule
+ *  the listImportantBirthdays query and the Flutter client both use. */
+function isBirthdayRow(row) {
+  return `${row.type || ''} ${row.title || ''}`.toLowerCase().includes('birthday');
+}
+
+function formatEventWhen(row) {
+  if (!row.start_time) return 'date to be confirmed';
+  const d = new Date(row.start_time);
+  if (Number.isNaN(d.getTime())) return 'date to be confirmed';
+  const datePart = d.toLocaleDateString('en-GB', {
+    weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC',
+  });
+  // An event with hide_time carries no meaningful clock time (birthdays,
+  // all-day events), so announcing one would be misleading.
+  if (row.hide_time) return datePart;
+  const timePart = d.toLocaleTimeString('en-GB', {
+    hour: '2-digit', minute: '2-digit', timeZone: 'UTC',
+  });
+  return `${datePart}, ${timePart} UTC`;
+}
+
+/** Notification copy and routing data for a global event.
+ *  `type` in extraData is what PushNotificationService/NotificationRouter
+ *  switch on, and `date` lets the app jump straight to the event's day. */
+function buildEventPush(row, action) {
+  const birthday = isBirthdayRow(row);
+  const name = row.person_name ? `${row.person_name}'s Birthday` : row.title;
+  const when = formatEventWhen(row);
+
+  return {
+    title: birthday
+      ? (action === 'updated' ? 'Birthday updated' : 'New birthday added')
+      : (action === 'updated' ? 'Event updated' : 'New event added'),
+    body: `${birthday ? name : row.title} - ${when}`,
+    eventId: String(row.id),
+    extraData: {
+      type: birthday ? 'birthday' : 'global_event',
+      eventId: String(row.id),
+      date: row.start_time ? new Date(row.start_time).toISOString() : '',
+      isBirthday: String(birthday),
+    },
+  };
+}
+
 function mapEvent(row, req) {
   return {
     id: row.id,
@@ -119,15 +164,15 @@ export const createEvent = async (req, res) => {
     const row = (await pool.query('SELECT * FROM events WHERE id = $1', [eventId])).rows[0];
     console.log('[events] created id=%s userId=%s global=%s', eventId, userId, global);
 
+    // Awaited and reported so a failed push is visible to the caller,
+    // the way the on-this-day/words/themes endpoints already do it.
+    let fcm = { sent: false, reason: 'not_global' };
     if (global) {
-      pushGlobalEvent({
-        title: 'New global event',
-        body: title,
-        eventId,
-      }).catch((e) => console.error('[fcm] createEvent push', e));
+      fcm = await pushGlobalEvent(buildEventPush(row, 'created'));
+      if (!fcm.sent) console.error('[fcm] createEvent push not sent:', fcm.reason);
     }
 
-    res.status(201).json({ success: true, event: mapEvent(row, req) });
+    res.status(201).json({ success: true, event: mapEvent(row, req), fcm });
   } catch (error) {
     console.error('createEvent', error);
     res.status(500).json({ success: false, message: error.message });
@@ -199,15 +244,13 @@ export const updateEvent = async (req, res) => {
 
     const updated = (await pool.query('SELECT * FROM events WHERE id = $1', [id])).rows[0];
 
+    let fcm = { sent: false, reason: 'not_global' };
     if (updated.is_global) {
-      pushGlobalEvent({
-        title: 'Global event updated',
-        body: updated.title,
-        eventId: id,
-      }).catch((e) => console.error('[fcm] updateEvent push', e));
+      fcm = await pushGlobalEvent(buildEventPush(updated, 'updated'));
+      if (!fcm.sent) console.error('[fcm] updateEvent push not sent:', fcm.reason);
     }
 
-    res.json({ success: true, event: mapEvent(updated, req) });
+    res.json({ success: true, event: mapEvent(updated, req), fcm });
   } catch (error) {
     console.error('updateEvent', error);
     res.status(500).json({ success: false, message: error.message });

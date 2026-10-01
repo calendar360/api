@@ -52,11 +52,15 @@ export async function pushGlobalEvent({ title, body, eventId, extraData }) {
     const messageId = await messaging.send({
       topic: GLOBAL_EVENTS_TOPIC,
       notification: { title, body },
-      data: {
-        type: 'global_event',
-        eventId: eventId || '',
-        ...(extraData || {}),
-      },
+      // FCM rejects the whole message if any data value is not a string,
+      // so coerce here rather than trusting every call site.
+      data: Object.fromEntries(
+        Object.entries({
+          type: 'global_event',
+          eventId: eventId || '',
+          ...(extraData || {}),
+        }).map(([k, v]) => [k, String(v ?? '')]),
+      ),
       android: {
         priority: 'high',
         notification: {
@@ -77,7 +81,7 @@ export async function pushGlobalEvent({ title, body, eventId, extraData }) {
         },
       },
     });
-    console.log('[fcm] topic push sent:', messageId);
+    console.log('[fcm] topic push sent:', messageId, '| title:', title);
     return { sent: true, messageId };
   } catch (e) {
     console.error('[fcm] push failed:', e.message);

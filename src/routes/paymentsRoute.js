@@ -22,12 +22,15 @@ router.get('/espees/success', handleEspeesSuccess);
 router.get('/espees/failed', handleEspeesFailure);
 router.post('/espees/webhook', handleEspeesWebhook);
 router.post('/premium/init', authRequired, initPremiumPayment);
-router.get('/premium/success', authRequired, handlePremiumSuccess);
-router.get('/premium/failed', authRequired, handlePremiumFailure);
+// No authRequired on the callbacks: these are reached by an Espees redirect,
+// which cannot send the `token` header. They authenticate the signed `uid` in
+// the query string instead — see services/paymentRefService.js.
+router.get('/premium/success', handlePremiumSuccess);
+router.get('/premium/failed', handlePremiumFailure);
 router.get('/ad-status/:adId', authRequired, getAdPaymentStatus);
 
 router.post('/meetings-sub/init', authRequired, initMeetingsSubscription);
-router.get('/meetings-sub/success', authRequired, handleMeetingsSubSuccess);
+router.get('/meetings-sub/success', handleMeetingsSubSuccess);
 router.get('/meetings-sub/failed', handleMeetingsSubFailure);
 router.get('/meetings-sub/status', authRequired, getMeetingsSubStatus);
 

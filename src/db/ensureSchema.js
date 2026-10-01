@@ -98,7 +98,6 @@ export async function ensureSchema() {
   await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS hide_time BOOLEAN DEFAULT false;`);
   await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS person_name VARCHAR(255);`);
   await pool.query(`ALTER TABLE words_for_month ADD COLUMN IF NOT EXISTS link_url VARCHAR(1000);`);
-  await pool.query(`ALTER TABLE theme_of_year ADD COLUMN IF NOT EXISTS link_url VARCHAR(1000);`);
   await pool.query(`ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS payment_id VARCHAR(255);`);
   await pool.query(`ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS payment JSONB;`);
   await pool.query(`ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS duration_days INT DEFAULT 1;`);
@@ -118,6 +117,10 @@ export async function ensureSchema() {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_theme_year ON theme_of_year(year);`);
+  // Must come after the CREATE above: this ALTER used to sit further up the
+  // file, where it threw on any database that did not already have the table
+  // and so skipped every statement after it.
+  await pool.query(`ALTER TABLE theme_of_year ADD COLUMN IF NOT EXISTS link_url VARCHAR(1000);`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS on_this_day (
@@ -168,6 +171,11 @@ export async function ensureSchema() {
   await pool.query(`ALTER TABLE meetings ADD COLUMN IF NOT EXISTS image_urls TEXT[] DEFAULT ARRAY[]::TEXT[];`);
 
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS meetings_sub JSONB;`);
+  // Free meetings already scheduled, counted against FREE_MEETING_USES. This
+  // replaced a 30-day trial; defaulting to 0 deliberately grants every
+  // existing account the full free allowance from the day it ships, since the
+  // old time-based trial had already lapsed for them.
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS meetings_free_used INT NOT NULL DEFAULT 0;`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS todos (
@@ -199,6 +207,15 @@ export async function ensureSchema() {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_todo_subtasks_todo ON todo_subtasks(todo_id);`);
+
+  // Birthday sync (KingsChat profile or manual entry).
+  // kingschat_profile keeps the raw profile payload so we can see exactly which
+  // fields KingsChat returns for this client id — birthdate is not documented.
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS birthday DATE;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS birthday_source VARCHAR(20);`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS birthday_synced_at TIMESTAMPTZ;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS kingschat_birthday DATE;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS kingschat_profile JSONB;`);
 
   console.log('[db] schema ready');
 }

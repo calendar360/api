@@ -1,6 +1,10 @@
 import pool from '../db/pool.js';
 import { pushToUser } from '../services/fcmService.js';
-import { computeMeetingsAccess } from '../services/meetingsAccessService.js';
+import {
+  computeMeetingsAccess,
+  consumeFreeMeetingUse,
+  refundFreeMeetingUse,
+} from '../services/meetingsAccessService.js';
 
 function formatMeeting(row, invitees = []) {
   return {
@@ -116,26 +120,48 @@ export async function createMeeting(req, res) {
     return res.status(400).json({ success: false, message: 'Title and startTime are required' });
   }
 
-  // Subscription guard — free trial or paid subscription required
+  // Access guard — a remaining free use or a paid subscription is required.
+  let access;
   try {
     const userRow = await pool.query(
-      'SELECT created_at, meetings_sub FROM users WHERE id = $1',
+      'SELECT meetings_sub, meetings_free_used FROM users WHERE id = $1',
       [userId],
     );
     if (!userRow.rows.length) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
-    const { active } = computeMeetingsAccess(userRow.rows[0]);
-    if (!active) {
+    access = computeMeetingsAccess(userRow.rows[0]);
+  } catch (e) {
+    console.error('[meetings] access check failed:', e);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+
+  if (!access.active) {
+    return res.status(403).json({
+      success: false,
+      message: `You have used all ${access.freeUsesTotal} free meetings. Subscribe for 0.29 ESP/month to keep scheduling.`,
+      code: 'MEETINGS_SUB_REQUIRED',
+      freeUsesLeft: 0,
+      freeUsesTotal: access.freeUsesTotal,
+    });
+  }
+
+  // Spend a free use up front, so two requests racing on the last one cannot
+  // both succeed. Refunded below if the meeting then fails to save.
+  let freeUsesLeft = access.freeUsesLeft;
+  const spendingFreeUse = access.isFree;
+  if (spendingFreeUse) {
+    const left = await consumeFreeMeetingUse(userId);
+    if (left === null) {
       return res.status(403).json({
         success: false,
-        message: 'Meetings subscription required. Subscribe for 0.29 ESP/month.',
+        message: `You have used all ${access.freeUsesTotal} free meetings. Subscribe for 0.29 ESP/month to keep scheduling.`,
         code: 'MEETINGS_SUB_REQUIRED',
+        freeUsesLeft: 0,
+        freeUsesTotal: access.freeUsesTotal,
       });
     }
-  } catch (e) {
-    console.error('[meetings] subscription check failed:', e);
-    return res.status(500).json({ success: false, message: 'Server error' });
+    freeUsesLeft = left;
   }
 
   const safeImageUrls = Array.isArray(imageUrls) && imageUrls.length > 0 ? imageUrls : null;
@@ -155,9 +181,18 @@ export async function createMeeting(req, res) {
     );
     const org = orgResult.rows[0] || {};
 
-    res.json({ success: true, meeting: formatMeeting({ ...meeting, ...org }, []) });
+    res.json({
+      success: true,
+      meeting: formatMeeting({ ...meeting, ...org }, []),
+      freeUsesLeft,
+      freeUsesTotal: access.freeUsesTotal,
+      usedFreeMeeting: spendingFreeUse,
+    });
   } catch (e) {
     console.error('[meetings] createMeeting:', e);
+    // The use was spent before the insert, so hand it back — otherwise a
+    // server error would silently cost the user one of their free meetings.
+    if (spendingFreeUse) await refundFreeMeetingUse(userId);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 }
