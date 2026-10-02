@@ -217,5 +217,52 @@ export async function ensureSchema() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS kingschat_birthday DATE;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS kingschat_profile JSONB;`);
 
+  // ── Blog: admin-written posts about the global meetings, with likes and
+  // comments from every user ───────────────────────────────────────────────
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS blog_posts (
+      id SERIAL PRIMARY KEY,
+      title VARCHAR(500) NOT NULL,
+      excerpt TEXT,
+      body TEXT,
+      image_path VARCHAR(500),
+      link_url VARCHAR(1000),
+      meeting_date DATE,
+      status VARCHAR(20) NOT NULL DEFAULT 'published',
+      created_by_user_id INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // The primary key is what makes a like idempotent: tapping twice, or two
+  // requests racing, cannot inflate the count.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS blog_post_likes (
+      post_id INT NOT NULL REFERENCES blog_posts(id) ON DELETE CASCADE,
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (post_id, user_id)
+    );
+  `);
+
+  // user_name is stored alongside user_id so a deleted account still leaves a
+  // readable thread, the way birthday_wishes does it.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS blog_post_comments (
+      id SERIAL PRIMARY KEY,
+      post_id INT NOT NULL REFERENCES blog_posts(id) ON DELETE CASCADE,
+      user_id INT REFERENCES users(id) ON DELETE SET NULL,
+      user_name VARCHAR(255) NOT NULL,
+      message TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_blog_posts_feed ON blog_posts(status, created_at DESC);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_blog_likes_post ON blog_post_likes(post_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_blog_comments_post ON blog_post_comments(post_id, created_at DESC);`);
+
   console.log('[db] schema ready');
 }
