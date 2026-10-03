@@ -3,9 +3,10 @@ import axios from 'axios';
 import pool from '../db/pool.js';
 import { computeMeetingsAccess } from '../services/meetingsAccessService.js';
 import { signedRefQuery, verifiedUserId } from '../services/paymentRefService.js';
+import { pushToAdmins } from '../services/fcmService.js';
 
-const MARQUEE_PRICE_PER_DAY = 0.99;
-const MARQUEE_CENTS_PER_DAY = 99;
+const MARQUEE_CENTS_PER_HOUR = 99;
+const MARQUEE_PRICE_PER_HOUR = MARQUEE_CENTS_PER_HOUR / 100;
 const PREMIUM_PRICE = 2.99;
 const PREMIUM_PRICE_CENTS = 299;
 
@@ -52,9 +53,11 @@ export const initMarqueeAdPayment = async (req, res) => {
     const success_url = `${baseUrl}/api/payments/espees/success?adId=${encodeURIComponent(adId)}`;
     const fail_url = `${baseUrl}/api/payments/espees/failed?adId=${encodeURIComponent(adId)}`;
 
-    const amountCents = ad.amount_cents || MARQUEE_CENTS_PER_DAY;
+    const amountCents = ad.amount_cents || MARQUEE_CENTS_PER_HOUR;
     const price = amountCents / 100;
-    const days = ad.duration_days || Math.max(1, Math.round(amountCents / MARQUEE_CENTS_PER_DAY));
+    const hours =
+      ad.duration_hours ||
+      Math.max(1, Math.round(amountCents / MARQUEE_CENTS_PER_HOUR));
 
     const payload = {
       product_sku: `marquee_ad_${adId}`,
@@ -91,7 +94,7 @@ export const initMarqueeAdPayment = async (req, res) => {
       payment_id,
       status: 'Initialized',
       amount: price,
-      durationDays: days,
+      durationHours: hours,
       createdAt: new Date().toISOString(),
     };
 
@@ -106,7 +109,7 @@ export const initMarqueeAdPayment = async (req, res) => {
       payment_id,
       adId,
       amount: price,
-      durationDays: days,
+      durationHours: hours,
     });
   } catch (err) {
     console.error('initMarqueeAdPayment', err.response?.data || err.message);
@@ -118,28 +121,44 @@ export const initMarqueeAdPayment = async (req, res) => {
   }
 };
 
-async function activateMarqueeAd(adId, confirmData = {}) {
-  const adRes = await pool.query('SELECT * FROM advertisements WHERE id = $1', [adId]);
-  const ad = adRes.rows[0];
-  const start = new Date();
-  const end =
-    ad?.end_at != null
-      ? new Date(ad.end_at)
-      : new Date(start.getTime() + (ad?.duration_days || 1) * 24 * 60 * 60 * 1000);
+/**
+ * Records a marquee advert as paid and puts it in the approval queue.
+ *
+ * It used to go straight to 'active'. An advert is shown to every user of the
+ * app, so it now waits for an admin — see adsController.approveAd, which is
+ * what sets the run window, starting from the approval rather than from here,
+ * so queue time does not eat into the days that were paid for.
+ */
+async function markMarqueeAdPaid(adId, confirmData = {}) {
+  const paidAt = new Date().toISOString();
   const payment = {
     status: 'Paid',
-    confirmedAt: new Date().toISOString(),
+    confirmedAt: paidAt,
     confirmation: confirmData,
   };
-  await pool.query(
+  const { rows } = await pool.query(
     `UPDATE advertisements SET
-      status = 'active',
-      start_at = $1,
-      end_at = $2,
-      payment = $3
-     WHERE id = $4`,
-    [start.toISOString(), end.toISOString(), JSON.stringify(payment), adId],
+      status = 'pending_approval',
+      paid_at = $1,
+      payment = $2
+     WHERE id = $3
+     RETURNING *`,
+    [paidAt, JSON.stringify(payment), adId],
   );
+
+  const ad = rows[0];
+  if (!ad) return;
+
+  // Admins are told there is something to decide on; without this the queue
+  // would only be found by someone opening the screen on the off chance.
+  const push = await pushToAdmins({
+    title: 'Advert awaiting approval',
+    body: `"${ad.title}" was paid for and needs review.`,
+    data: { type: 'ad_approval', adId: String(ad.id) },
+  });
+  if (!push.sent) {
+    console.warn('[espees] admin approval push not delivered:', push.reason || push);
+  }
 }
 
 export const initPremiumPayment = async (req, res) => {
@@ -219,7 +238,10 @@ export const handleEspeesSuccess = async (req, res) => {
       payment = typeof ad.payment === 'string' ? JSON.parse(ad.payment) : ad.payment || {};
     } catch (_) {}
 
-    if (ad.status === 'active' && payment.status === 'Paid') {
+    if (
+      payment.status === 'Paid' &&
+      (ad.status === 'active' || ad.status === 'pending_approval')
+    ) {
       return res.send(paymentHtml(true, 'Payment already confirmed'));
     }
 
@@ -234,7 +256,7 @@ export const handleEspeesSuccess = async (req, res) => {
         );
         confirmData = confirmResp.data || {};
         const returnedAmount = confirmData?.price ?? confirmData?.amount;
-        const expectedPrice = (ad.amount_cents || MARQUEE_CENTS_PER_DAY) / 100;
+        const expectedPrice = (ad.amount_cents || MARQUEE_CENTS_PER_HOUR) / 100;
         if (returnedAmount != null && parseFloat(returnedAmount) !== expectedPrice) {
           await pool.query(
             `UPDATE advertisements SET payment = $1, status = 'pending_review' WHERE id = $2`,
@@ -254,10 +276,14 @@ export const handleEspeesSuccess = async (req, res) => {
       }
     }
 
-    await activateMarqueeAd(adId, confirmData);
-    const days = ad.duration_days || 1;
+    await markMarqueeAdPaid(adId, confirmData);
+    const hours = ad.duration_hours || (ad.duration_days || 1) * 24;
     return res.send(
-      paymentHtml(true, `Marquee advert is now live for ${days} day${days === 1 ? '' : 's'}`),
+      paymentHtml(
+        true,
+        `Payment received. Your advert is awaiting approval and will run for ` +
+          `${hours} hour${hours === 1 ? '' : 's'} once an admin approves it.`,
+      ),
     );
   } catch (err) {
     console.error('handleEspeesSuccess', err);
@@ -358,7 +384,11 @@ export const handleEspeesWebhook = async (req, res) => {
       payment = typeof ad.payment === 'string' ? JSON.parse(ad.payment) : ad.payment || {};
     } catch (_) {}
 
-    if (payment.status === 'Paid' || ad.status === 'active') {
+    if (
+      payment.status === 'Paid' ||
+      ad.status === 'active' ||
+      ad.status === 'pending_approval'
+    ) {
       return res.status(200).json({ received: true });
     }
 
@@ -368,7 +398,7 @@ export const handleEspeesWebhook = async (req, res) => {
       payload.success === true;
 
     if (ok) {
-      await activateMarqueeAd(ad.id, payload);
+      await markMarqueeAdPaid(ad.id, payload);
       return res.status(200).json({ received: true });
     }
 

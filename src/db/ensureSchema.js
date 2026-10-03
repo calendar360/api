@@ -101,8 +101,29 @@ export async function ensureSchema() {
   await pool.query(`ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS payment_id VARCHAR(255);`);
   await pool.query(`ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS payment JSONB;`);
   await pool.query(`ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS duration_days INT DEFAULT 1;`);
+  // Adverts are priced and scheduled per hour. `duration_days` came first and
+  // is kept only so historical rows stay readable — nothing writes it now.
+  await pool.query(`ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS duration_hours INT;`);
+  // Backfill is a true conversion, not a guess: the old code set
+  // end_at = start_at + duration_days * 24h, so those adverts really did run
+  // that many days. IS NULL keeps this a no-op on every later boot.
+  await pool.query(`
+    UPDATE advertisements
+       SET duration_hours = COALESCE(duration_days, 1) * 24
+     WHERE duration_hours IS NULL;
+  `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_ads_active ON advertisements(status, end_at);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_ads_payment_id ON advertisements(payment_id);`);
+
+  // Advert approval. A paid advert now waits for an admin before it goes live,
+  // so the moment it was paid for and the moment it starts running are no
+  // longer the same thing and are recorded separately.
+  await pool.query(`ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ;`);
+  await pool.query(`ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;`);
+  await pool.query(`ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS approved_by_user_id INT REFERENCES users(id) ON DELETE SET NULL;`);
+  await pool.query(`ALTER TABLE advertisements ADD COLUMN IF NOT EXISTS rejection_reason TEXT;`);
+  // The approval queue is read newest-first and filtered by status.
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_ads_status_created ON advertisements(status, created_at DESC);`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS theme_of_year (

@@ -121,3 +121,54 @@ export async function pushToUser(fcmToken, { title, body, data = {} }) {
     return { sent: false, reason: e.message };
   }
 }
+
+/**
+ * Sends to one user, looked up by id.
+ *
+ * Saves every call site from having to select fcm_token itself, and reports a
+ * missing token as a reason rather than an error — a user who has never
+ * granted notifications is a normal case, not a failure.
+ */
+export async function pushToUserId(userId, { title, body, data = {} }) {
+  if (!userId) return { sent: false, reason: 'no_user' };
+  try {
+    const { rows } = await pool.query(
+      'SELECT fcm_token FROM users WHERE id = $1',
+      [userId],
+    );
+    const token = rows[0]?.fcm_token;
+    if (!token) return { sent: false, reason: 'no_token' };
+    return await pushToUser(token, { title, body, data });
+  } catch (e) {
+    console.error('[fcm] pushToUserId failed:', e.message);
+    return { sent: false, reason: e.message };
+  }
+}
+
+/**
+ * Sends to every admin that has a device token.
+ *
+ * Used for work that needs a human decision — an advert waiting for approval.
+ * Sent per token rather than over a topic, because admin is a database flag
+ * that can be granted or revoked at any time, and a topic subscription made
+ * at install time could not follow that.
+ */
+export async function pushToAdmins({ title, body, data = {} }) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, fcm_token FROM users
+        WHERE is_admin = true AND fcm_token IS NOT NULL AND fcm_token <> ''`,
+    );
+    if (!rows.length) return { sent: false, reason: 'no_admin_tokens', count: 0 };
+
+    const results = await Promise.all(
+      rows.map((r) => pushToUser(r.fcm_token, { title, body, data })),
+    );
+    const sent = results.filter((r) => r.sent).length;
+    console.log(`[fcm] admin push "${title}" -> ${sent}/${rows.length} delivered`);
+    return { sent: sent > 0, count: sent, attempted: rows.length };
+  } catch (e) {
+    console.error('[fcm] pushToAdmins failed:', e.message);
+    return { sent: false, reason: e.message, count: 0 };
+  }
+}
