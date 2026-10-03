@@ -2,7 +2,12 @@ import crypto from 'crypto';
 import axios from 'axios';
 import pool from '../db/pool.js';
 import { computeMeetingsAccess } from '../services/meetingsAccessService.js';
-import { signedRefQuery, verifiedUserId } from '../services/paymentRefService.js';
+import {
+  signedRefQuery,
+  verifiedUserId,
+  signedAdRefQuery,
+  verifiedAdRef,
+} from '../services/paymentRefService.js';
 import { pushToAdmins } from '../services/fcmService.js';
 
 const MARQUEE_CENTS_PER_HOUR = 99;
@@ -48,10 +53,27 @@ export const initMarqueeAdPayment = async (req, res) => {
     if (ad.status === 'active') {
       return res.status(400).json({ success: false, message: 'Advert already active' });
     }
+    // Payment is only reachable once an admin has approved the advert. This is
+    // what stops anyone paying their way past review — and, with the signed
+    // callback below, what stops an advert going live without either.
+    // 'pending_payment' is accepted only for drafts left over from the old
+    // pay-first flow.
+    if (ad.status !== 'approved_unpaid' && ad.status !== 'pending_payment') {
+      return res.status(409).json({
+        success: false,
+        message:
+          ad.status === 'pending_approval'
+            ? 'This advert is still being reviewed. You will be notified when it is approved.'
+            : `This advert cannot be paid for while it is "${ad.status}"`,
+        status: ad.status,
+      });
+    }
 
     const baseUrl = backendBaseUrl(req);
-    const success_url = `${baseUrl}/api/payments/espees/success?adId=${encodeURIComponent(adId)}`;
-    const fail_url = `${baseUrl}/api/payments/espees/failed?adId=${encodeURIComponent(adId)}`;
+    // Signed, so the advert id and the payer cannot be swapped or invented.
+    const ref = signedAdRefQuery(req.userId, adId);
+    const success_url = `${baseUrl}/api/payments/espees/success?${ref}`;
+    const fail_url = `${baseUrl}/api/payments/espees/failed?${ref}`;
 
     const amountCents = ad.amount_cents || MARQUEE_CENTS_PER_HOUR;
     const price = amountCents / 100;
@@ -63,7 +85,7 @@ export const initMarqueeAdPayment = async (req, res) => {
       product_sku: `marquee_ad_${adId}`,
       price,
       merchant_wallet: process.env.ESPEES_MERCHANT_WALLET || process.env.ESPEES_WALLET,
-      narration: `Marquee advert: ${ad.title} (${days} day${days === 1 ? '' : 's'})`,
+      narration: `Marquee advert: ${ad.title} (${hours} hour${hours === 1 ? '' : 's'})`,
       success_url,
       fail_url,
     };
@@ -129,7 +151,16 @@ export const initMarqueeAdPayment = async (req, res) => {
  * what sets the run window, starting from the approval rather than from here,
  * so queue time does not eat into the days that were paid for.
  */
-async function markMarqueeAdPaid(adId, confirmData = {}) {
+/**
+ * Puts a paid advert live, starting its run window now.
+ *
+ * Review already happened — the advert reached payment only because an admin
+ * approved it — so payment is the last step and the clock starts here. That
+ * also means queue time never eats into the hours that were bought.
+ *
+ * Only ever called after Espees has confirmed the payment server-to-server.
+ */
+async function activatePaidAdvert(adId, confirmData = {}) {
   const paidAt = new Date().toISOString();
   const payment = {
     status: 'Paid',
@@ -138,27 +169,45 @@ async function markMarqueeAdPaid(adId, confirmData = {}) {
   };
   const { rows } = await pool.query(
     `UPDATE advertisements SET
-      status = 'pending_approval',
+      status = 'active',
       paid_at = $1,
+      start_at = $1,
+      end_at = $1::timestamptz +
+        (COALESCE(duration_hours, COALESCE(duration_days, 1) * 24) || ' hours')::interval,
       payment = $2
      WHERE id = $3
      RETURNING *`,
     [paidAt, JSON.stringify(payment), adId],
   );
+  return rows[0] || null;
+}
 
-  const ad = rows[0];
-  if (!ad) return;
-
-  // Admins are told there is something to decide on; without this the queue
-  // would only be found by someone opening the screen on the off chance.
+/** Parks an advert for an admin to resolve, rather than activating on doubt. */
+async function flagAdvertForReview(adId, payment, label, detail) {
+  await pool.query(
+    `UPDATE advertisements SET payment = $1, status = 'pending_review' WHERE id = $2`,
+    [JSON.stringify({ ...payment, status: label, detail }), adId],
+  );
   const push = await pushToAdmins({
-    title: 'Advert awaiting approval',
-    body: `"${ad.title}" was paid for and needs review.`,
-    data: { type: 'ad_approval', adId: String(ad.id) },
+    title: 'Advert payment needs review',
+    body: `An advert payment could not be confirmed (${label}).`,
+    data: { type: 'ad_approval', adId: String(adId) },
   });
   if (!push.sent) {
-    console.warn('[espees] admin approval push not delivered:', push.reason || push);
+    console.warn('[espees] review push not delivered:', push.reason || push);
   }
+}
+
+/** True when a confirmation payload looks like a completed payment. */
+function looksPaid(confirmData) {
+  const raw = String(
+    confirmData?.status ?? confirmData?.payment_status ?? confirmData?.state ?? '',
+  ).toLowerCase();
+  // No status field at all is not treated as a failure — several Espees
+  // responses carry only the amount — but a status that is present and says
+  // something other than success is.
+  if (!raw) return true;
+  return raw.includes('paid') || raw.includes('success') || raw.includes('complete');
 }
 
 export const initPremiumPayment = async (req, res) => {
@@ -219,15 +268,21 @@ export const initPremiumPayment = async (req, res) => {
 
 export const handleEspeesSuccess = async (req, res) => {
   try {
-    const adId = req.query.adId;
+    // The advert and the payer both come from the signed query. A bare
+    // `?adId=` used to be enough here, which let anyone mark any advert paid.
+    const ref = verifiedAdRef(req.query);
+    if (!ref) {
+      return res.status(400).send(paymentHtml(false, 'This payment link is not valid'));
+    }
+    const { userId, adId } = ref;
+
     const transaction_id =
       req.query.transaction_id || req.query.payment_id || req.query.product_id;
 
-    if (!adId) {
-      return res.status(400).send(paymentHtml(false, 'Missing advert id'));
-    }
-
-    const adRes = await pool.query('SELECT * FROM advertisements WHERE id = $1', [adId]);
+    const adRes = await pool.query(
+      'SELECT * FROM advertisements WHERE id = $1 AND user_id = $2',
+      [adId, userId],
+    );
     if (!adRes.rows.length) {
       return res.status(404).send(paymentHtml(false, 'Advert not found'));
     }
@@ -238,51 +293,74 @@ export const handleEspeesSuccess = async (req, res) => {
       payment = typeof ad.payment === 'string' ? JSON.parse(ad.payment) : ad.payment || {};
     } catch (_) {}
 
-    if (
-      payment.status === 'Paid' &&
-      (ad.status === 'active' || ad.status === 'pending_approval')
-    ) {
+    if (payment.status === 'Paid' && ad.status === 'active') {
       return res.send(paymentHtml(true, 'Payment already confirmed'));
     }
 
-    let confirmData = {};
+    // Espees must confirm the payment server-to-server before anything goes
+    // live. Without this, a signature alone would still let the advertiser
+    // replay their own return URL and never pay — the signature proves who
+    // the callback is about, not that money moved.
     const productId = transaction_id || ad.payment_id;
-    if (productId) {
-      try {
-        const confirmResp = await axios.post(
-          'https://api.espees.org/payment/confirm',
-          { product_id: productId },
-          { headers: { 'Content-Type': 'application/json' }, timeout: 20000 },
-        );
-        confirmData = confirmResp.data || {};
-        const returnedAmount = confirmData?.price ?? confirmData?.amount;
-        const expectedPrice = (ad.amount_cents || MARQUEE_CENTS_PER_HOUR) / 100;
-        if (returnedAmount != null && parseFloat(returnedAmount) !== expectedPrice) {
-          await pool.query(
-            `UPDATE advertisements SET payment = $1, status = 'pending_review' WHERE id = $2`,
-            [
-              JSON.stringify({
-                ...payment,
-                status: 'Discrepancy',
-                confirmation: confirmData,
-              }),
-              adId,
-            ],
-          );
-          return res.send(paymentHtml(false, 'Amount mismatch — contact support'));
-        }
-      } catch (confirmErr) {
-        console.error('[espees] confirm', confirmErr.message);
-      }
+    if (!productId) {
+      return res.send(
+        paymentHtml(
+          false,
+          'We could not verify this payment. Nothing has been charged and your advert has not gone live.',
+        ),
+      );
     }
 
-    await markMarqueeAdPaid(adId, confirmData);
-    const hours = ad.duration_hours || (ad.duration_days || 1) * 24;
+    let confirmData = {};
+    try {
+      const confirmResp = await axios.post(
+        'https://api.espees.org/payment/confirm',
+        { product_id: productId },
+        { headers: { 'Content-Type': 'application/json' }, timeout: 20000 },
+      );
+      confirmData = confirmResp.data || {};
+    } catch (confirmErr) {
+      // Unreachable or erroring provider is not proof of payment, so the
+      // advert waits for an admin instead of being activated on faith.
+      console.error('[espees] confirm failed:', confirmErr.message);
+      await flagAdvertForReview(adId, payment, 'Unconfirmed', confirmErr.message);
+      return res.send(
+        paymentHtml(
+          false,
+          'We could not confirm your payment with Espees yet. An admin will check it and your advert will go live if the payment went through.',
+        ),
+      );
+    }
+
+    if (!looksPaid(confirmData)) {
+      await flagAdvertForReview(adId, payment, 'NotPaid', confirmData?.status);
+      return res.send(
+        paymentHtml(false, 'Espees has not reported this payment as complete.'),
+      );
+    }
+
+    const returnedAmount = confirmData?.price ?? confirmData?.amount;
+    const expectedPrice = (ad.amount_cents || MARQUEE_CENTS_PER_HOUR) / 100;
+    if (returnedAmount == null) {
+      await flagAdvertForReview(adId, payment, 'AmountMissing', null);
+      return res.send(
+        paymentHtml(
+          false,
+          'Espees did not report the amount paid. An admin will check it.',
+        ),
+      );
+    }
+    if (parseFloat(returnedAmount) !== expectedPrice) {
+      await flagAdvertForReview(adId, payment, 'Discrepancy', String(returnedAmount));
+      return res.send(paymentHtml(false, 'Amount mismatch — contact support'));
+    }
+
+    const live = await activatePaidAdvert(adId, confirmData);
+    const hours = live?.duration_hours || ad.duration_hours || 1;
     return res.send(
       paymentHtml(
         true,
-        `Payment received. Your advert is awaiting approval and will run for ` +
-          `${hours} hour${hours === 1 ? '' : 's'} once an admin approves it.`,
+        `Payment confirmed. Your advert is live for ${hours} hour${hours === 1 ? '' : 's'}.`,
       ),
     );
   } catch (err) {
@@ -293,11 +371,14 @@ export const handleEspeesSuccess = async (req, res) => {
 
 export const handleEspeesFailure = async (req, res) => {
   try {
-    const adId = req.query.adId;
-    if (adId) {
+    // Signed like the success callback, so one advertiser cannot mark another
+    // advertiser's advert as failed.
+    const ref = verifiedAdRef(req.query);
+    if (ref) {
       await pool.query(
-        `UPDATE advertisements SET status = 'payment_failed' WHERE id = $1 AND status != 'active'`,
-        [adId],
+        `UPDATE advertisements SET status = 'payment_failed'
+          WHERE id = $1 AND user_id = $2 AND status = 'approved_unpaid'`,
+        [ref.adId, ref.userId],
       );
     }
     const details = req.query.status_details || 'Payment was not completed';
@@ -384,11 +465,7 @@ export const handleEspeesWebhook = async (req, res) => {
       payment = typeof ad.payment === 'string' ? JSON.parse(ad.payment) : ad.payment || {};
     } catch (_) {}
 
-    if (
-      payment.status === 'Paid' ||
-      ad.status === 'active' ||
-      ad.status === 'pending_approval'
-    ) {
+    if (payment.status === 'Paid' || ad.status === 'active') {
       return res.status(200).json({ received: true });
     }
 
@@ -398,12 +475,19 @@ export const handleEspeesWebhook = async (req, res) => {
       payload.success === true;
 
     if (ok) {
-      await markMarqueeAdPaid(ad.id, payload);
+      // Only an advert an admin has approved may be activated. A webhook for
+      // anything else is parked for review rather than put in front of users.
+      if (ad.status === 'approved_unpaid' || ad.status === 'pending_payment') {
+        await activatePaidAdvert(ad.id, payload);
+      } else {
+        await flagAdvertForReview(ad.id, payment, 'UnexpectedStatus', ad.status);
+      }
       return res.status(200).json({ received: true });
     }
 
     await pool.query(
-      `UPDATE advertisements SET status = 'payment_failed', payment = $1 WHERE id = $2`,
+      `UPDATE advertisements SET status = 'payment_failed', payment = $1
+        WHERE id = $2 AND status <> 'active'`,
       [JSON.stringify({ ...payment, status: 'Failed', lastWebhook: payload }), ad.id],
     );
     return res.status(200).json({ received: true });

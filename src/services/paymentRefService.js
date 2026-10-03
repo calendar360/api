@@ -51,3 +51,70 @@ export function verifiedUserId(kind, query, plan) {
   const ok = crypto.timingSafeEqual(Buffer.from(sig, 'utf8'), Buffer.from(expected, 'utf8'));
   return ok ? uid : null;
 }
+
+// ── Adverts ─────────────────────────────────────────────────────────────────
+
+/**
+ * Advert return URLs sign the advert id as well as the user.
+ *
+ * The ads callback used to carry a bare `?adId=5`, so anyone could name any
+ * advert. Binding both values into one HMAC means a caller cannot swap the
+ * advert, the user, or either one independently.
+ *
+ * This proves *who* the callback is about. It does not prove payment — that is
+ * confirmed server-to-server against Espees before an advert goes live, which
+ * is what stops a user replaying their own legitimately signed URL.
+ */
+export function signedAdRefQuery(userId, adId) {
+  return new URLSearchParams({
+    uid: String(userId),
+    ad: String(adId),
+    sig: signature('ad', userId, String(adId)),
+  }).toString();
+}
+
+/** { userId, adId } when the signature matches, else null. */
+export function verifiedAdRef(query) {
+  const uid = Number(query?.uid);
+  const adId = Number(query?.ad);
+  const sig = query?.sig;
+  if (!Number.isInteger(uid) || uid <= 0) return null;
+  if (!Number.isInteger(adId) || adId <= 0) return null;
+  if (typeof sig !== 'string') return null;
+
+  const expected = signature('ad', uid, String(adId));
+  if (sig.length !== expected.length) return null;
+  const ok = crypto.timingSafeEqual(
+    Buffer.from(sig, 'utf8'),
+    Buffer.from(expected, 'utf8'),
+  );
+  return ok ? { userId: uid, adId } : null;
+}
+
+/**
+ * Read token for one advert's image, handed out only to the owner and admins.
+ *
+ * Advert images live outside the public uploads directory now, so a pending or
+ * rejected advert's artwork is not world-readable. An approved advert's image
+ * needs no token: it is in the marquee, which anyone can see.
+ *
+ * Scoped to a single advert id, so it cannot be used to read another's. It
+ * does not expire — if one leaks it exposes that one image, which is a far
+ * smaller surface than the whole uploads directory being public.
+ */
+export function adImageToken(adId) {
+  return crypto
+    .createHmac('sha256', tokenSecret())
+    .update(`adimg:${adId}`)
+    .digest('hex')
+    .slice(0, 32);
+}
+
+export function verifyAdImageToken(adId, token) {
+  const expected = adImageToken(adId);
+  if (typeof token !== 'string' || token.length !== expected.length) return false;
+  return crypto.timingSafeEqual(
+    Buffer.from(token, 'utf8'),
+    Buffer.from(expected, 'utf8'),
+  );
+}

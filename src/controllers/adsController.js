@@ -1,6 +1,16 @@
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import pool from '../db/pool.js';
-import { uploadPublicUrl } from '../utils/publicUrl.js';
+import { publicBaseUrl } from '../utils/publicUrl.js';
 import { pushToUserId } from '../services/fcmService.js';
+import { adImageToken, verifyAdImageToken } from '../services/paymentRefService.js';
+import { advertUploadsDir } from '../routes/advertUploadRoute.js';
+import { deleteAdvertImage } from '../services/advertImageStore.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+/** Where adverts used to be stored, back when they were world-readable. */
+const legacyUploadsDir = path.join(__dirname, '../../uploads');
 
 const PRICE_PER_HOUR_CENTS = 99;
 // 30 days' worth of hours — the longest run the previous per-day code could
@@ -9,26 +19,42 @@ const MAX_AD_HOURS = 720;
 const MAX_QUEUE_PAGE = 100;
 
 /**
- * Advert lifecycle:
+ * How many adverts one account may have waiting for review at once.
  *
- *   pending_payment  -> the draft, before Espees is paid
- *   pending_approval -> paid, waiting for an admin (see paymentController)
- *   active           -> approved and running in the home marquee
- *   rejected         -> an admin declined it, with a reason
+ * Submitting used to cost money, and that charge was what kept the queue
+ * honest. Review is free now, so without a cap a single account could bury the
+ * queue in work. Rejected and withdrawn adverts do not count, so a genuine
+ * advertiser is never stuck.
+ */
+const MAX_PENDING_PER_USER = 3;
+
+/**
+ * Advert lifecycle. Review comes *before* payment:
+ *
+ *   pending_approval -> submitted, nothing charged, waiting for an admin
+ *   approved_unpaid  -> an admin said yes; the advertiser is asked to pay
+ *   active           -> paid, and running in the home marquee
+ *   rejected         -> declined, with a reason. No money was ever taken.
+ *   pending_review   -> paid, but the amount could not be confirmed
  *   cancelled        -> withdrawn by the advertiser, or taken down
  *   payment_failed   -> Espees reported a failure
- *   pending_review   -> the amount Espees confirmed did not match the price
+ *   pending_payment  -> legacy only: a draft from the old pay-first flow
  *
- * Only `active` is ever served to the marquee, so nothing reaches users
- * without having been approved first.
+ * Reviewing before charging is the whole point: a decline costs the advertiser
+ * nothing, so there is no refund to arrange. The run window starts at payment,
+ * which now happens after approval, so queue time cannot eat into it either.
  */
 export const AD_STATUS = {
-  pendingPayment: 'pending_payment',
   pendingApproval: 'pending_approval',
+  approvedUnpaid: 'approved_unpaid',
   active: 'active',
   rejected: 'rejected',
+  pendingReview: 'pending_review',
   cancelled: 'cancelled',
 };
+
+/** Statuses an admin can act on, and which the queue therefore lists. */
+const DECIDABLE = ['pending_approval', 'approved_unpaid', 'active', 'rejected', 'pending_review'];
 
 function advertiserName(row) {
   return (
@@ -39,14 +65,29 @@ function advertiserName(row) {
   );
 }
 
-function mapAd(row, req, { includeAdvertiser = false } = {}) {
+/**
+ * The advert's image URL, or null when the caller may not see it.
+ *
+ * An active advert is in the marquee, so its image is public. Anything else is
+ * only readable with a per-advert token, which is handed out solely to the
+ * owner and to admins.
+ */
+function adImageUrl(row, req, privileged) {
+  if (!row.image_path) return null;
+  const url = `${publicBaseUrl(req)}/api/ads/${row.id}/image`;
+  if (row.status === 'active') return url;
+  if (!privileged) return null;
+  return `${url}?t=${adImageToken(row.id)}`;
+}
+
+function mapAd(row, req, { includeAdvertiser = false, privileged = false } = {}) {
   const ad = {
     id: row.id,
     userId: row.user_id,
     title: row.title,
     description: row.description,
     imagePath: row.image_path,
-    imageUrl: row.image_path ? uploadPublicUrl(req, row.image_path) : null,
+    imageUrl: adImageUrl(row, req, privileged),
     linkUrl: row.link_url,
     startAt: row.start_at,
     endAt: row.end_at,
@@ -59,14 +100,15 @@ function mapAd(row, req, { includeAdvertiser = false } = {}) {
     approvedAt: row.approved_at ?? null,
     rejectionReason: row.rejection_reason ?? null,
   };
-  // Only the admin queue needs to know who placed the advert; the advertiser's
-  // own list does not, so their name is not handed out more widely than that.
+  // Only the admin queue needs to know who placed the advert.
   if (includeAdvertiser) {
     ad.advertiserName = advertiserName(row);
     ad.advertiserEmail = row.email ?? null;
   }
   return ad;
 }
+
+// ── Reading ─────────────────────────────────────────────────────────────────
 
 export const listActiveAds = async (req, res) => {
   try {
@@ -91,14 +133,67 @@ export const listMyAds = async (req, res) => {
       `SELECT * FROM advertisements WHERE user_id = $1 ORDER BY created_at DESC`,
       [req.userId],
     );
-    res.json({ success: true, ads: result.rows.map((r) => mapAd(r, req)) });
+    res.json({
+      success: true,
+      // Their own adverts, so they may see their own artwork at any status.
+      ads: result.rows.map((r) => mapAd(r, req, { privileged: true })),
+    });
   } catch (error) {
     console.error('listMyAds', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-/** Create advert awaiting Espees payment (0.99 ESP per hour once paid). */
+/**
+ * GET /api/ads/:id/image
+ *
+ * The only way to read advert artwork. Public for an advert that is live,
+ * token- or owner-gated otherwise.
+ */
+export const serveAdImage = async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT id, user_id, image_path, status FROM advertisements WHERE id = $1',
+      [req.params.id],
+    );
+    if (!rows.length || !rows[0].image_path) return res.status(404).end();
+    const ad = rows[0];
+
+    const isLive = ad.status === 'active';
+    const isOwner = req.userId != null && req.userId === ad.user_id;
+    const allowed =
+      isLive || isOwner || req.isAdmin === true || verifyAdImageToken(ad.id, req.query.t);
+    if (!allowed) return res.status(403).end();
+
+    // basename strips any path the stored value might carry, so a crafted
+    // image_path cannot escape these two directories.
+    const name = path.basename(ad.image_path);
+    const file = [
+      path.join(advertUploadsDir, name),
+      // Adverts created before artwork moved out of the public directory.
+      path.join(legacyUploadsDir, name),
+    ].find((p) => fs.existsSync(p));
+    if (!file) return res.status(404).end();
+
+    res.set(
+      'Cache-Control',
+      isLive ? 'public, max-age=3600' : 'private, no-store',
+    );
+    return res.sendFile(file);
+  } catch (error) {
+    console.error('serveAdImage', error);
+    return res.status(500).end();
+  }
+};
+
+// ── Submitting ──────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/ads — submits an advert for review. Nothing is charged here.
+ *
+ * The price is quoted back so the app can show what approval will cost, but
+ * payment only becomes possible once an admin has approved it.
+ */
 export const createPendingAd = async (req, res) => {
   try {
     const {
@@ -123,36 +218,56 @@ export const createPendingAd = async (req, res) => {
       });
     }
 
+    const openCount = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM advertisements
+        WHERE user_id = $1 AND status = 'pending_approval'`,
+      [req.userId],
+    );
+    if (openCount.rows[0].n >= MAX_PENDING_PER_USER) {
+      return res.status(429).json({
+        success: false,
+        message:
+          `You already have ${MAX_PENDING_PER_USER} adverts waiting for review. ` +
+          `Wait for one to be decided, or withdraw it, before submitting another.`,
+        pendingLimit: MAX_PENDING_PER_USER,
+      });
+    }
+
     const durationHours = Math.min(
       MAX_AD_HOURS,
       Math.max(1, parseInt(hoursRaw ?? legacyHoursRaw, 10) || 1),
     );
     const amountCents = PRICE_PER_HOUR_CENTS * durationHours;
 
-    const start = new Date();
-    const end = new Date(start.getTime() + durationHours * 60 * 60 * 1000);
+    // start_at/end_at are NOT NULL, so they are seeded here and then
+    // overwritten with the real window when payment completes.
+    const now = new Date();
+    const provisionalEnd = new Date(now.getTime() + durationHours * 60 * 60 * 1000);
 
     const result = await pool.query(
       `INSERT INTO advertisements (
         user_id, title, description, image_path, link_url, start_at, end_at,
         amount_cents, duration_hours, status
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending_payment') RETURNING *`,
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending_approval') RETURNING *`,
       [
         req.userId,
         title.trim(),
         description || null,
-        imagePath,
+        path.basename(imagePath),
         linkUrl || null,
-        start.toISOString(),
-        end.toISOString(),
+        now.toISOString(),
+        provisionalEnd.toISOString(),
         amountCents,
         durationHours,
       ],
     );
 
+    const ad = result.rows[0];
+    await notifyAdminsOfSubmission(ad);
+
     res.status(201).json({
       success: true,
-      ad: mapAd(result.rows[0], req),
+      ad: mapAd(ad, req, { privileged: true }),
       amount: amountCents / 100,
       durationHours,
       pricePerHour: PRICE_PER_HOUR_CENTS / 100,
@@ -163,18 +278,37 @@ export const createPendingAd = async (req, res) => {
   }
 };
 
+async function notifyAdminsOfSubmission(ad) {
+  const { pushToAdmins } = await import('../services/fcmService.js');
+  const push = await pushToAdmins({
+    title: 'Advert awaiting approval',
+    body: `"${ad.title}" was submitted for review.`,
+    data: { type: 'ad_approval', adId: String(ad.id) },
+  });
+  if (!push.sent) {
+    console.warn('[ads] admin submission push not delivered:', push.reason || push);
+  }
+  return push;
+}
+
 export const cancelPendingAd = async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query(
       `UPDATE advertisements SET status = 'cancelled'
-       WHERE id = $1 AND user_id = $2 AND status = 'pending_payment'
-       RETURNING id`,
+       WHERE id = $1 AND user_id = $2
+         AND status IN ('pending_payment', 'pending_approval', 'approved_unpaid')
+       RETURNING *`,
       [id, req.userId],
     );
     if (!result.rows.length) {
-      return res.status(404).json({ success: false, message: 'Pending advert not found' });
+      return res
+        .status(404)
+        .json({ success: false, message: 'No withdrawable advert found' });
     }
+    // Withdrawn means it will never run, so the artwork is not kept. A
+    // resubmission uploads again.
+    await deleteAdvertImage(result.rows[0]);
     res.json({ success: true });
   } catch (error) {
     console.error('cancelPendingAd', error);
@@ -195,7 +329,11 @@ export const deleteAd = async (req, res) => {
         return res.status(403).json({ success: false, message: 'Not your ad' });
       }
     }
-    await pool.query(`UPDATE advertisements SET status = 'cancelled' WHERE id = $1`, [id]);
+    const cancelled = await pool.query(
+      `UPDATE advertisements SET status = 'cancelled' WHERE id = $1 RETURNING *`,
+      [id],
+    );
+    await deleteAdvertImage(cancelled.rows[0]);
     res.json({ success: true });
   } catch (error) {
     console.error('deleteAd', error);
@@ -206,22 +344,22 @@ export const deleteAd = async (req, res) => {
 // ── Admin approval queue ────────────────────────────────────────────────────
 
 /**
- * GET /api/ads/pending-approval — newest first.
+ * GET /api/ads/pending-approval — newest first, paged.
  *
- * `?q=` filters on the advert's own text and on who placed it, so an admin
- * chasing one submission does not have to scroll the queue.
- * `?status=` can widen it to a decided advert, for looking up what was done.
+ * `?q=` filters on the advert's own text and on who placed it.
+ * `?status=` narrows to one status; `all` means every status an admin can act
+ * on, which includes `pending_review` — a payment whose amount could not be
+ * confirmed, and which otherwise nobody would ever see.
  */
 export const listPendingApproval = async (req, res) => {
   try {
     const limit = Math.min(
-      Math.max(parseInt(req.query.limit, 10) || 50, 1),
+      Math.max(parseInt(req.query.limit, 10) || 25, 1),
       MAX_QUEUE_PAGE,
     );
     const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
 
-    const allowed = ['pending_approval', 'active', 'rejected', 'all'];
-    const status = allowed.includes(req.query.status)
+    const status = [...DECIDABLE, 'all'].includes(req.query.status)
       ? req.query.status
       : 'pending_approval';
 
@@ -232,9 +370,8 @@ export const listPendingApproval = async (req, res) => {
       values.push(status);
       where.push(`a.status = $${values.length}`);
     } else {
-      // "All" still means decided adverts only — an unpaid draft is not
-      // something an admin can act on.
-      where.push(`a.status IN ('pending_approval', 'active', 'rejected')`);
+      values.push(DECIDABLE);
+      where.push(`a.status = ANY($${values.length})`);
     }
 
     const q = req.query.q?.trim();
@@ -260,16 +397,22 @@ export const listPendingApproval = async (req, res) => {
       values,
     );
 
-    // The badge count always reflects the queue itself, never the filter, so
-    // searching cannot make pending work look as though it has gone away.
-    const countRes = await pool.query(
-      `SELECT COUNT(*)::int AS n FROM advertisements WHERE status = 'pending_approval'`,
+    // The badges always describe the real backlog, never the current filter,
+    // so searching cannot make outstanding work look as though it is gone.
+    const counts = await pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE status = 'pending_approval')::int AS pending,
+         COUNT(*) FILTER (WHERE status = 'pending_review')::int   AS review
+       FROM advertisements`,
     );
 
     res.json({
       success: true,
-      ads: rows.map((r) => mapAd(r, req, { includeAdvertiser: true })),
-      pendingCount: countRes.rows[0].n,
+      ads: rows.map((r) =>
+        mapAd(r, req, { includeAdvertiser: true, privileged: true }),
+      ),
+      pendingCount: counts.rows[0].pending,
+      reviewCount: counts.rows[0].review,
       limit,
       offset,
       hasMore: rows.length === limit,
@@ -280,13 +423,20 @@ export const listPendingApproval = async (req, res) => {
   }
 };
 
-/** GET /api/ads/pending-count — just the badge number. */
+/** GET /api/ads/pending-count — the badge numbers on their own. */
 export const pendingApprovalCount = async (_req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT COUNT(*)::int AS n FROM advertisements WHERE status = 'pending_approval'`,
+      `SELECT
+         COUNT(*) FILTER (WHERE status = 'pending_approval')::int AS pending,
+         COUNT(*) FILTER (WHERE status = 'pending_review')::int   AS review
+       FROM advertisements`,
     );
-    res.json({ success: true, pendingCount: rows[0].n });
+    res.json({
+      success: true,
+      pendingCount: rows[0].pending,
+      reviewCount: rows[0].review,
+    });
   } catch (error) {
     console.error('pendingApprovalCount', error);
     res.status(500).json({ success: false, message: error.message });
@@ -296,70 +446,119 @@ export const pendingApprovalCount = async (_req, res) => {
 /**
  * POST /api/ads/:id/approve
  *
- * The run window is restarted from the moment of approval rather than kept
- * from when payment went through. The advertiser paid for a number of days of
- * exposure, and time spent waiting in this queue is not exposure.
+ * Two different decisions share this route, because they are the same act from
+ * the admin's side — "yes, this advert is fine":
  *
- * The status guard in the WHERE clause is what makes this safe against two
- * admins approving the same advert at once: the second UPDATE matches nothing.
+ *  - from `pending_approval`: approves it *for payment*. Nothing is charged
+ *    and no run window starts; the advertiser is asked to pay.
+ *  - from `pending_review`: the advertiser has already paid but the amount
+ *    could not be confirmed. Approving accepts it and starts the run.
+ *
+ * The status in each WHERE clause is what makes this safe against two admins
+ * acting at once: the second UPDATE matches nothing.
  */
 export const approveAd = async (req, res) => {
   try {
     const { id } = req.params;
-    const start = new Date();
-
-    const { rows } = await pool.query(
-      `UPDATE advertisements
-          SET status = 'active',
-              approved_at = $1,
-              approved_by_user_id = $2,
-              rejection_reason = NULL,
-              start_at = $1,
-              end_at = $1::timestamptz +
-                (COALESCE(duration_hours, COALESCE(duration_days, 1) * 24) || ' hours')::interval
-        WHERE id = $3 AND status = 'pending_approval'
-        RETURNING *`,
-      [start.toISOString(), req.userId, id],
+    const current = await pool.query(
+      'SELECT status FROM advertisements WHERE id = $1',
+      [id],
     );
+    if (!current.rows.length) {
+      return res.status(404).json({ success: false, message: 'Advert not found' });
+    }
+    const status = current.rows[0].status;
+    const now = new Date().toISOString();
 
-    if (!rows.length) {
-      const current = await pool.query(
-        'SELECT status FROM advertisements WHERE id = $1',
-        [id],
+    if (status === 'pending_approval') {
+      const { rows } = await pool.query(
+        `UPDATE advertisements
+            SET status = 'approved_unpaid',
+                approved_at = $1,
+                approved_by_user_id = $2,
+                rejection_reason = NULL
+          WHERE id = $3 AND status = 'pending_approval'
+          RETURNING *`,
+        [now, req.userId, id],
       );
-      if (!current.rows.length) {
-        return res.status(404).json({ success: false, message: 'Advert not found' });
-      }
-      return res.status(409).json({
-        success: false,
-        message: `Advert is already "${current.rows[0].status}"`,
-        status: current.rows[0].status,
+      if (!rows.length) return conflict(res, id);
+
+      const ad = rows[0];
+      const amount = ((ad.amount_cents || 0) / 100).toFixed(2);
+      const push = await pushToUserId(ad.user_id, {
+        title: 'Your advert was approved',
+        body: `"${ad.title}" is approved. Pay ${amount} ESP to put it live.`,
+        data: { type: 'ad_approved_unpaid', adId: String(ad.id) },
+      });
+      return res.json({
+        success: true,
+        ad: mapAd(ad, req, { includeAdvertiser: true, privileged: true }),
+        push,
       });
     }
 
-    const ad = rows[0];
-    const hours = ad.duration_hours || (ad.duration_days || 1) * 24;
-    const push = await pushToUserId(ad.user_id, {
-      title: 'Your advert is live',
-      body: `"${ad.title}" is now running for ${hours} hour${hours === 1 ? '' : 's'}.`,
-      data: { type: 'ad_approved', adId: String(ad.id) },
-    });
+    if (status === 'pending_review') {
+      const { rows } = await pool.query(
+        `UPDATE advertisements
+            SET status = 'active',
+                approved_at = $1,
+                approved_by_user_id = $2,
+                rejection_reason = NULL,
+                start_at = $1,
+                end_at = $1::timestamptz +
+                  (COALESCE(duration_hours, COALESCE(duration_days, 1) * 24) || ' hours')::interval
+          WHERE id = $3 AND status = 'pending_review'
+          RETURNING *`,
+        [now, req.userId, id],
+      );
+      if (!rows.length) return conflict(res, id);
 
-    res.json({ success: true, ad: mapAd(ad, req, { includeAdvertiser: true }), push });
+      const ad = rows[0];
+      const hours = ad.duration_hours || (ad.duration_days || 1) * 24;
+      const push = await pushToUserId(ad.user_id, {
+        title: 'Your advert is live',
+        body: `"${ad.title}" is now running for ${hours} hour${hours === 1 ? '' : 's'}.`,
+        data: { type: 'ad_approved', adId: String(ad.id) },
+      });
+      return res.json({
+        success: true,
+        ad: mapAd(ad, req, { includeAdvertiser: true, privileged: true }),
+        push,
+      });
+    }
+
+    return res.status(409).json({
+      success: false,
+      message: `Nothing to approve — advert is "${status}"`,
+      status,
+    });
   } catch (error) {
     console.error('approveAd', error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
+async function conflict(res, id) {
+  const { rows } = await pool.query(
+    'SELECT status FROM advertisements WHERE id = $1',
+    [id],
+  );
+  return res.status(409).json({
+    success: false,
+    message: `Advert is already "${rows[0]?.status}"`,
+    status: rows[0]?.status,
+  });
+}
+
 /**
  * POST /api/ads/:id/reject
  *
- * A reason is required, and it is sent to the advertiser — being turned down
- * with no explanation after paying is not something to ship.
+ * A reason is required and is sent to the advertiser.
  *
- * Note that this does not refund anything. Espees has no refund call in this
- * codebase, so a rejected advert has to be refunded by hand.
+ * Declining a `pending_approval` advert costs them nothing — that is the point
+ * of reviewing before charging. Declining one that already paid (a
+ * `pending_review` discrepancy, or a legacy pay-first advert) still needs a
+ * refund arranged by hand; Espees has no refund call in this codebase.
  */
 export const rejectAd = async (req, res) => {
   try {
@@ -378,7 +577,8 @@ export const rejectAd = async (req, res) => {
               rejection_reason = $1,
               approved_by_user_id = $2,
               approved_at = NULL
-        WHERE id = $3 AND status = 'pending_approval'
+        WHERE id = $3
+          AND status IN ('pending_approval', 'approved_unpaid', 'pending_review')
         RETURNING *`,
       [reason, req.userId, id],
     );
@@ -393,19 +593,28 @@ export const rejectAd = async (req, res) => {
       }
       return res.status(409).json({
         success: false,
-        message: `Advert is already "${current.rows[0].status}"`,
+        message: `Cannot decline an advert that is "${current.rows[0].status}"`,
         status: current.rows[0].status,
       });
     }
 
     const ad = rows[0];
+    const wasPaid = ad.paid_at != null;
+    // A declined advert will never run, so its artwork goes with it.
+    await deleteAdvertImage(ad);
     const push = await pushToUserId(ad.user_id, {
       title: 'Your advert was not approved',
       body: reason.length > 120 ? `${reason.slice(0, 120)}…` : reason,
       data: { type: 'ad_rejected', adId: String(ad.id) },
     });
 
-    res.json({ success: true, ad: mapAd(ad, req, { includeAdvertiser: true }), push });
+    res.json({
+      success: true,
+      ad: mapAd(ad, req, { includeAdvertiser: true, privileged: true }),
+      // Flagged so the UI can warn that this one needs a manual refund.
+      needsRefund: wasPaid,
+      push,
+    });
   } catch (error) {
     console.error('rejectAd', error);
     res.status(500).json({ success: false, message: error.message });

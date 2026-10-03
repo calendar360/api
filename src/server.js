@@ -10,6 +10,7 @@ import oauthRouter from './routes/oauthRoute.js';
 import eventsRouter from './routes/eventsRoute.js';
 import importantBirthdaysRouter from './routes/importantBirthdaysRoute.js';
 import uploadRouter from './routes/uploadRoute.js';
+import advertUploadRouter from './routes/advertUploadRoute.js';
 import wordsRouter from './routes/wordsRoute.js';
 import adsRouter from './routes/adsRoute.js';
 import paymentsRouter from './routes/paymentsRoute.js';
@@ -22,6 +23,7 @@ import blogRouter from './routes/blogRoute.js';
 import { initFcm } from './services/fcmService.js';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler.js';
 import { ensureSchema } from './db/ensureSchema.js';
+import { startAdvertImageSweeper } from './services/advertImageStore.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const uploadsDir = path.join(__dirname, '../uploads');
@@ -74,6 +76,7 @@ app.use('/oauth', oauthRouter);
 app.use('/api/user', userRouter);
 app.use('/api/events', eventsRouter);
 app.use('/api/important-birthdays', importantBirthdaysRouter);
+app.use('/api/upload', advertUploadRouter);
 app.use('/api/upload', uploadRouter);
 app.use('/api/words', wordsRouter);
 app.use('/api/ads', adsRouter);
@@ -92,6 +95,9 @@ async function start() {
   try {
     await ensureSchema();
     await initFcm();
+    // Clears advert uploads that no advert ever claimed. Started after the
+    // schema is ready, because it reads the advertisements table.
+    startAdvertImageSweeper();
   } catch (err) {
     console.error('[db] schema init failed:', err.message);
     console.error('[db] check DATABASE_URL in api/.env');
