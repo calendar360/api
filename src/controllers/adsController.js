@@ -29,6 +29,20 @@ const MAX_QUEUE_PAGE = 100;
 const MAX_PENDING_PER_USER = 3;
 
 /**
+ * How many adverts may be committed to the marquee at once.
+ *
+ * The strip scrolls at about 30px/second and each entry is roughly 200px, so
+ * every extra advert stretches the time before any one of them comes round
+ * again. At 20 a full cycle is a little over a minute, which an advertiser can
+ * reasonably call exposure; at the old limit of 50 it was over five minutes
+ * and nobody stays on the home screen that long.
+ *
+ * Counted as adverts already running plus adverts approved and awaiting
+ * payment, because an approval is a promise of a slot.
+ */
+const MAX_CONCURRENT_LIVE_ADS = 20;
+
+/**
  * Advert lifecycle. Review comes *before* payment:
  *
  *   pending_approval -> submitted, nothing charged, waiting for an admin
@@ -117,8 +131,8 @@ export const listActiveAds = async (req, res) => {
       `SELECT * FROM advertisements
        WHERE status = 'active' AND start_at <= $1 AND end_at >= $1
        ORDER BY RANDOM()
-       LIMIT 50`,
-      [now],
+       LIMIT $2`,
+      [now, MAX_CONCURRENT_LIVE_ADS],
     );
     res.json({ success: true, ads: result.rows.map((r) => mapAd(r, req)) });
   } catch (error) {
@@ -413,6 +427,8 @@ export const listPendingApproval = async (req, res) => {
       ),
       pendingCount: counts.rows[0].pending,
       reviewCount: counts.rows[0].review,
+      committedSlots: await countCommittedSlots(),
+      liveLimit: MAX_CONCURRENT_LIVE_ADS,
       limit,
       offset,
       hasMore: rows.length === limit,
@@ -422,6 +438,20 @@ export const listPendingApproval = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+/**
+ * Adverts occupying a marquee slot: running now, or approved and waiting to be
+ * paid for. An approval reserves the slot, so it has to count — otherwise the
+ * marquee could be oversubscribed the moment everyone pays.
+ */
+async function countCommittedSlots() {
+  const { rows } = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM advertisements
+      WHERE status = 'approved_unpaid'
+         OR (status = 'active' AND end_at > now())`,
+  );
+  return rows[0].n;
+}
 
 /** GET /api/ads/pending-count — the badge numbers on their own. */
 export const pendingApprovalCount = async (_req, res) => {
@@ -436,6 +466,8 @@ export const pendingApprovalCount = async (_req, res) => {
       success: true,
       pendingCount: rows[0].pending,
       reviewCount: rows[0].review,
+      committedSlots: await countCommittedSlots(),
+      liveLimit: MAX_CONCURRENT_LIVE_ADS,
     });
   } catch (error) {
     console.error('pendingApprovalCount', error);
@@ -469,6 +501,25 @@ export const approveAd = async (req, res) => {
     }
     const status = current.rows[0].status;
     const now = new Date().toISOString();
+
+    // Both transitions below put an advert into the marquee's rotation, so
+    // both are capped. Checked once here rather than inside each branch.
+    const committed = await countCommittedSlots();
+    if (committed >= MAX_CONCURRENT_LIVE_ADS) {
+      const next = await pool.query(
+        `SELECT MIN(end_at) AS soonest FROM advertisements
+          WHERE status = 'active' AND end_at > now()`,
+      );
+      return res.status(409).json({
+        success: false,
+        message:
+          `The marquee is full — ${committed} of ${MAX_CONCURRENT_LIVE_ADS} slots ` +
+          `are taken by running or approved adverts. Approve this once a slot frees up.`,
+        liveLimit: MAX_CONCURRENT_LIVE_ADS,
+        committed,
+        nextSlotAt: next.rows[0].soonest ?? null,
+      });
+    }
 
     if (status === 'pending_approval') {
       const { rows } = await pool.query(
