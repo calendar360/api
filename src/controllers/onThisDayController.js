@@ -17,6 +17,13 @@ async function requireAdmin(req, res) {
   return true;
 }
 
+// Counts are read as subqueries rather than kept on the row, so they cannot
+// drift away from the view log.
+const VIEW_COUNTS = `
+  (SELECT COUNT(*)::int FROM on_this_day_views v WHERE v.post_id = p.id) AS view_count,
+  (SELECT COUNT(DISTINCT v.user_id)::int FROM on_this_day_views v
+    WHERE v.post_id = p.id AND v.user_id IS NOT NULL) AS unique_views`;
+
 function rowToJson(row, req) {
   return {
     id: row.id,
@@ -26,6 +33,11 @@ function rowToJson(row, req) {
     imageUrl: row.image_path ? uploadPublicUrl(req, row.image_path) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    // Admin-only: readers have no business knowing how a post is performing,
+    // and the field is left out entirely rather than sent as zero.
+    ...(req.isAdmin
+      ? { viewCount: row.view_count ?? 0, uniqueViews: row.unique_views ?? 0 }
+      : {}),
   };
 }
 
@@ -33,7 +45,7 @@ function rowToJson(row, req) {
 export async function listPosts(req, res) {
   try {
     const { rows } = await pool.query(
-      `SELECT * FROM on_this_day ORDER BY created_at DESC`,
+      `SELECT p.*, ${VIEW_COUNTS} FROM on_this_day p ORDER BY p.created_at DESC`,
     );
     res.json({ success: true, posts: rows.map((r) => rowToJson(r, req)) });
   } catch (e) {
@@ -46,7 +58,7 @@ export async function listPosts(req, res) {
 export async function getPost(req, res) {
   try {
     const { rows } = await pool.query(
-      `SELECT * FROM on_this_day WHERE id = $1`,
+      `SELECT p.*, ${VIEW_COUNTS} FROM on_this_day p WHERE p.id = $1`,
       [req.params.id],
     );
     if (!rows.length)
@@ -133,4 +145,31 @@ export async function deletePost(req, res) {
     console.error("deletePost", e);
     res.status(500).json({ success: false, message: e.message });
   }
+}
+
+
+/**
+ * POST /api/on-this-day/:id/view — records that someone opened a post.
+ *
+ * Deliberately its own call rather than a side effect of GET /:id, so that a
+ * list render, a prefetch or an admin editing a post does not inflate the
+ * number. Open to signed-out devices; an unknown id is a no-op rather than an
+ * error, because the app fires this in the background and must never show the
+ * reader a failure for it.
+ */
+export async function recordView(req, res) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.json({ success: true });
+  }
+  try {
+    await pool.query(
+      `INSERT INTO on_this_day_views (post_id, user_id)
+       SELECT $1, $2 WHERE EXISTS (SELECT 1 FROM on_this_day WHERE id = $1)`,
+      [id, req.userId ?? null],
+    );
+  } catch (e) {
+    console.error('recordView', e.message);
+  }
+  return res.json({ success: true });
 }

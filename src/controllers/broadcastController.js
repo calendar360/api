@@ -1,5 +1,8 @@
+import pool from '../db/pool.js';
 import { pushBroadcast } from '../services/fcmService.js';
 import { uploadPublicUrl } from '../utils/publicUrl.js';
+
+const MAX_HISTORY_PAGE = 100;
 
 const MAX_TITLE = 120;
 // Android collapses anything much longer than this in the tray, and the rest
@@ -102,14 +105,35 @@ export const sendBroadcast = async (req, res) => {
     return res.status(400).json({ success: false, message: linkError });
   }
 
+  // Recorded before the push, so the row's id can travel in the payload and
+  // taps have something to attach themselves to. A send that then fails is
+  // kept too, marked undelivered — a broadcast that did not go out is
+  // precisely the thing an admin needs to see.
+  const sender = await pool.query(
+    `SELECT COALESCE(NULLIF(TRIM(CONCAT_WS(' ', first_name, last_name)), ''), name, email)
+       AS display_name FROM users WHERE id = $1`,
+    [req.userId],
+  );
+
+  const inserted = await pool.query(
+    `INSERT INTO broadcasts (title, body, image_path, link_url, sent_by_user_id, sent_by_name)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    [title, body, image || null, url || null, req.userId, sender.rows[0]?.display_name ?? null],
+  );
+  const broadcastId = inserted.rows[0].id;
+
   const result = await pushBroadcast({
     title,
     body,
     imageUrl,
-    data: url ? { url } : {},
+    data: { broadcastId, ...(url ? { url } : {}) },
   });
 
   if (!result.sent) {
+    await pool.query(
+      `UPDATE broadcasts SET delivered = false, delivery_error = $2 WHERE id = $1`,
+      [broadcastId, String(result.reason ?? 'unknown')],
+    );
     // The push itself failed — say so rather than reporting a success the
     // admin would have no way to check.
     return res.status(502).json({
@@ -118,11 +142,98 @@ export const sendBroadcast = async (req, res) => {
         result.reason === 'fcm_not_configured'
           ? 'Push notifications are not configured on the server'
           : `Could not send: ${result.reason}`,
+      broadcastId,
     });
   }
 
+  await pool.query(`UPDATE broadcasts SET fcm_message_id = $2 WHERE id = $1`, [
+    broadcastId,
+    result.messageId ?? null,
+  ]);
+
   console.log(
-    `[broadcast] user ${req.userId} sent "${title}"${url ? ` -> ${url}` : ''}`,
+    `[broadcast] user ${req.userId} sent #${broadcastId} "${title}"${url ? ` -> ${url}` : ''}`,
   );
-  return res.json({ success: true, messageId: result.messageId, link: url ?? null });
+  return res.json({
+    success: true,
+    id: broadcastId,
+    messageId: result.messageId,
+    link: url ?? null,
+  });
+};
+
+
+function broadcastRowToJson(row, req) {
+  return {
+    id: row.id,
+    title: row.title,
+    body: row.body,
+    imagePath: row.image_path ?? null,
+    imageUrl: row.image_path ? uploadPublicUrl(req, row.image_path) : null,
+    linkUrl: row.link_url ?? null,
+    sentByName: row.sent_by_name ?? null,
+    delivered: row.delivered,
+    deliveryError: row.delivery_error ?? null,
+    clicks: row.clicks,
+    uniqueClicks: row.unique_clicks,
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * GET /api/broadcast — admin-only history, newest first.
+ *
+ * Counts are computed from broadcast_clicks rather than kept as a column, so
+ * they cannot drift. `clicks` is every tap; `uniqueClicks` counts distinct
+ * signed-in people, and is always the smaller, more conservative number.
+ */
+export const listBroadcasts = async (req, res) => {
+  const limit = Math.min(
+    Math.max(parseInt(req.query.limit, 10) || 25, 1),
+    MAX_HISTORY_PAGE,
+  );
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+
+  const { rows } = await pool.query(
+    `SELECT b.*,
+            (SELECT COUNT(*)::int FROM broadcast_clicks c WHERE c.broadcast_id = b.id) AS clicks,
+            (SELECT COUNT(DISTINCT c.user_id)::int FROM broadcast_clicks c
+              WHERE c.broadcast_id = b.id AND c.user_id IS NOT NULL) AS unique_clicks
+       FROM broadcasts b
+      ORDER BY b.created_at DESC
+      LIMIT $1 OFFSET $2`,
+    [limit + 1, offset],
+  );
+
+  const hasMore = rows.length > limit;
+  return res.json({
+    success: true,
+    broadcasts: rows.slice(0, limit).map((r) => broadcastRowToJson(r, req)),
+    hasMore,
+  });
+};
+
+/**
+ * POST /api/broadcast/:id/click — records a tap.
+ *
+ * Open to signed-out devices (authOptional): a tap is worth counting whoever
+ * made it, and requiring a session would quietly under-report. An unknown id
+ * is a no-op rather than an error — the app should never show the user a
+ * failure for something it did in the background.
+ */
+export const recordBroadcastClick = async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.json({ success: true });
+  }
+  try {
+    await pool.query(
+      `INSERT INTO broadcast_clicks (broadcast_id, user_id)
+       SELECT $1, $2 WHERE EXISTS (SELECT 1 FROM broadcasts WHERE id = $1)`,
+      [id, req.userId ?? null],
+    );
+  } catch (e) {
+    console.error('[broadcast] click record failed:', e.message);
+  }
+  return res.json({ success: true });
 };

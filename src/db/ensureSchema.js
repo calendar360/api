@@ -285,5 +285,53 @@ export async function ensureSchema() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_blog_likes_post ON blog_post_likes(post_id);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_blog_comments_post ON blog_post_comments(post_id, created_at DESC);`);
 
+  // ── Admin broadcasts ──────────────────────────────────────────────────
+  // Every push an admin sends is recorded, so the history survives the
+  // notification tray and can be tracked afterwards.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS broadcasts (
+      id SERIAL PRIMARY KEY,
+      title VARCHAR(200) NOT NULL,
+      body TEXT NOT NULL,
+      image_path VARCHAR(500),
+      link_url VARCHAR(1000),
+      sent_by_user_id INT REFERENCES users(id) ON DELETE SET NULL,
+      sent_by_name VARCHAR(255),
+      fcm_message_id VARCHAR(255),
+      delivered BOOLEAN NOT NULL DEFAULT true,
+      delivery_error TEXT,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // One row per tap. Kept as rows rather than a counter on `broadcasts` so
+  // total taps and distinct people can both be reported, and so a counter
+  // cannot drift away from what actually happened. user_id is null for a tap
+  // from a signed-out device, which still counts toward the total.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS broadcast_clicks (
+      id SERIAL PRIMARY KEY,
+      broadcast_id INT NOT NULL REFERENCES broadcasts(id) ON DELETE CASCADE,
+      user_id INT REFERENCES users(id) ON DELETE SET NULL,
+      clicked_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_broadcasts_feed ON broadcasts(created_at DESC);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_broadcast_clicks_bid ON broadcast_clicks(broadcast_id);`);
+
+  // ── Today in History view counts ──────────────────────────────────────
+  // One row per view, same reasoning as broadcast_clicks: the admin-facing
+  // count is derived, never incremented in place.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS on_this_day_views (
+      id SERIAL PRIMARY KEY,
+      post_id INT NOT NULL REFERENCES on_this_day(id) ON DELETE CASCADE,
+      user_id INT REFERENCES users(id) ON DELETE SET NULL,
+      viewed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_otd_views_post ON on_this_day_views(post_id);`);
+
   console.log('[db] schema ready');
 }
