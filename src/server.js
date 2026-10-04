@@ -20,6 +20,7 @@ import onThisDayRouter from './routes/onThisDayRoute.js';
 import meetingsRouter from './routes/meetingsRoute.js';
 import todosRouter from './routes/todosRoute.js';
 import blogRouter from './routes/blogRoute.js';
+import broadcastRouter from './routes/broadcastRoute.js';
 import { initFcm } from './services/fcmService.js';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler.js';
 import { ensureSchema } from './db/ensureSchema.js';
@@ -87,6 +88,7 @@ app.use('/api/on-this-day', onThisDayRouter);
 app.use('/api/meetings', meetingsRouter);
 app.use('/api/todos', todosRouter);
 app.use('/api/blog', blogRouter);
+app.use('/api/broadcast', broadcastRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

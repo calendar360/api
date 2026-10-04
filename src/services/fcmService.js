@@ -89,6 +89,55 @@ export async function pushGlobalEvent({ title, body, eventId, extraData }) {
   }
 }
 
+/**
+ * Admin broadcast to every device on the global topic.
+ *
+ * Separate from [pushGlobalEvent] because it carries no event: the type is
+ * `broadcast`, so the app's router leaves the user wherever they are instead
+ * of jumping the calendar to a date that does not exist. [imageUrl] must be a
+ * publicly reachable https/http URL — FCM fetches it itself, and silently
+ * drops the image (keeping the text) if it cannot.
+ */
+export async function pushBroadcast({ title, body, imageUrl, data = {} }) {
+  const ok = await initFcm();
+  if (!ok || !messaging) return { sent: false, reason: 'fcm_not_configured' };
+
+  try {
+    const messageId = await messaging.send({
+      topic: GLOBAL_EVENTS_TOPIC,
+      notification: { title, body, ...(imageUrl ? { imageUrl } : {}) },
+      data: Object.fromEntries(
+        Object.entries({ type: 'broadcast', ...data }).map(
+          ([k, v]) => [k, String(v ?? '')],
+        ),
+      ),
+      android: {
+        priority: 'high',
+        notification: {
+          // Same channel the topic already uses, so a device that has been
+          // through one global event push is guaranteed to have it.
+          channelId: 'cal360_global_events_v2',
+          priority: 'high',
+          defaultSound: true,
+          ...(imageUrl ? { imageUrl } : {}),
+        },
+      },
+      apns: {
+        payload: { aps: { alert: { title, body }, sound: 'default' } },
+        // The Node admin SDK takes camelCase `fcmOptions.imageUrl` here; the
+        // REST API's `fcm_options.image` spelling is silently ignored, which
+        // would mean no image on iOS and no error to notice it by.
+        ...(imageUrl ? { fcmOptions: { imageUrl } } : {}),
+      },
+    });
+    console.log('[fcm] broadcast sent:', messageId, '| title:', title);
+    return { sent: true, messageId };
+  } catch (e) {
+    console.error('[fcm] broadcast failed:', e.message);
+    return { sent: false, reason: e.message };
+  }
+}
+
 export async function saveUserFcmToken(userId, token) {
   if (!userId || !token) return;
   await pool.query(
