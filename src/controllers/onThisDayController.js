@@ -19,10 +19,19 @@ async function requireAdmin(req, res) {
 
 // Counts are read as subqueries rather than kept on the row, so they cannot
 // drift away from the view log.
+//
+// Admins are excluded from the reader-facing totals: an admin opening a post
+// to check it is not readership, and leaving and returning would otherwise
+// inflate its own numbers. The view rows are still written, so this is a
+// presentation rule that can be changed later without having lost anything.
+// LEFT JOIN, not JOIN, or signed-out views (user_id IS NULL) would drop out.
 const VIEW_COUNTS = `
-  (SELECT COUNT(*)::int FROM on_this_day_views v WHERE v.post_id = p.id) AS view_count,
+  (SELECT COUNT(*)::int FROM on_this_day_views v
+    LEFT JOIN users u ON u.id = v.user_id
+   WHERE v.post_id = p.id AND COALESCE(u.is_admin, false) = false) AS view_count,
   (SELECT COUNT(DISTINCT v.user_id)::int FROM on_this_day_views v
-    WHERE v.post_id = p.id AND v.user_id IS NOT NULL) AS unique_views,
+    JOIN users u ON u.id = v.user_id
+   WHERE v.post_id = p.id AND COALESCE(u.is_admin, false) = false) AS unique_views,
   (SELECT COUNT(*)::int FROM on_this_day_views v
     JOIN users u ON u.id = v.user_id
    WHERE v.post_id = p.id
@@ -251,9 +260,7 @@ export async function listTrackedViewers(req, res) {
   try {
     const { rows } = await pool.query(
       `SELECT t.id, t.email, t.label, t.created_at,
-              (u.id IS NOT NULL) AS has_account,
-              (SELECT COUNT(*)::int FROM on_this_day_views v
-                WHERE v.user_id = u.id) AS total_views
+              (u.id IS NOT NULL) AS has_account
          FROM tracked_viewers t
          LEFT JOIN users u ON LOWER(u.email) = t.email
         ORDER BY t.created_at DESC`,
@@ -265,7 +272,6 @@ export async function listTrackedViewers(req, res) {
         email: r.email,
         label: r.label ?? null,
         hasAccount: r.has_account === true,
-        totalViews: r.total_views ?? 0,
         createdAt: r.created_at,
       })),
     });
@@ -315,7 +321,6 @@ export async function addTrackedViewer(req, res) {
         email: row.email,
         label: row.label ?? null,
         hasAccount: acct.length > 0,
-        totalViews: 0,
         createdAt: row.created_at,
       },
     });
