@@ -332,6 +332,23 @@ export async function ensureSchema() {
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_otd_views_post ON on_this_day_views(post_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_otd_views_user ON on_this_day_views(user_id);`);
+
+  // ── Tracked viewers ───────────────────────────────────────────────────
+  // A short list of accounts whose views are counted separately, so an admin
+  // can tell whether one particular person has opened a post. Keyed by email
+  // rather than user id: an email can be added before that person has ever
+  // signed in, and it survives the account being deleted and recreated.
+  // Always stored lower-cased, because users.email is not normalised.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS tracked_viewers (
+      id SERIAL PRIMARY KEY,
+      email VARCHAR(255) NOT NULL UNIQUE,
+      label VARCHAR(120),
+      added_by_user_id INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
 
   console.log('[db] schema ready');
 }

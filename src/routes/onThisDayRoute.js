@@ -9,6 +9,9 @@ import {
   updatePost,
   deletePost,
   recordView,
+  listTrackedViewers,
+  addTrackedViewer,
+  removeTrackedViewer,
 } from '../controllers/onThisDayController.js';
 
 const router = express.Router();
@@ -24,6 +27,12 @@ router.post(
   rateLimit({ max: 120, windowMs: 60 * 60 * 1000, name: 'otd-view' }),
   recordView,
 );
+
+// Tracked viewers. Registered before "/:id" or Express matches the literal
+// segment as an id, and "tracked" is not a number.
+router.get('/tracked', authRequired, listTrackedViewers);
+router.post('/tracked', authRequired, addTrackedViewer);
+router.delete('/tracked/:id', authRequired, removeTrackedViewer);
 
 router.get('/:id', authOptional, adminFlag, getPost);
 router.post('/', authRequired, createPost);
